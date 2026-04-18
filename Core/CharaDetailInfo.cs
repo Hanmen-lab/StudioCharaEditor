@@ -2542,23 +2542,27 @@ namespace StudioCharaEditor
         public static CharaDetailDefine[] ClothDetailBuilder(ChaControl charInfo, int index)
         {
             ChaListDefine.CategoryNo[] MALE_CLOTH_CATEGORYNO = new ChaListDefine.CategoryNo[] {
-                ChaListDefine.CategoryNo.mo_top,
-                ChaListDefine.CategoryNo.mo_bot,
-                ChaListDefine.CategoryNo.mo_gloves,
-                ChaListDefine.CategoryNo.mo_shoes
+                ChaListDefine.CategoryNo.mo_top,       // 0: Top
+                ChaListDefine.CategoryNo.mo_bot,       // 1: Bot
+                ChaListDefine.CategoryNo.mo_top,       // 2: Placeholder
+                ChaListDefine.CategoryNo.mo_top,       // 3: Placeholder
+                ChaListDefine.CategoryNo.mo_gloves,    // 4: Gloves (Dùng đúng đồ nam)
+                ChaListDefine.CategoryNo.mo_top,       // 5: Placeholder
+                ChaListDefine.CategoryNo.mo_top,       // 6: Placeholder
+                ChaListDefine.CategoryNo.mo_shoes      // 7: Shoes (Dùng đúng đồ nam)
             };
             ChaListDefine.CategoryNo[] FEMALE_CLOTH_CATEGORYNO = new ChaListDefine.CategoryNo[] {
-                ChaListDefine.CategoryNo.fo_top, 
-                ChaListDefine.CategoryNo.fo_bot, 
-                ChaListDefine.CategoryNo.fo_inner_t, 
-                ChaListDefine.CategoryNo.fo_inner_b, 
-                ChaListDefine.CategoryNo.fo_gloves, 
-                ChaListDefine.CategoryNo.fo_panst, 
-                ChaListDefine.CategoryNo.fo_socks, 
+                ChaListDefine.CategoryNo.fo_top,
+                ChaListDefine.CategoryNo.fo_bot,
+                ChaListDefine.CategoryNo.fo_inner_t,
+                ChaListDefine.CategoryNo.fo_inner_b,
+                ChaListDefine.CategoryNo.fo_gloves,
+                ChaListDefine.CategoryNo.fo_panst,
+                ChaListDefine.CategoryNo.fo_socks,
                 ChaListDefine.CategoryNo.fo_shoes
             };
             List<CharaDetailDefine> clothDetails = new List<CharaDetailDefine>();
-            string clothName = charInfo.sex == 1 ? CharaEditorController.FEMALE_CLOTHES_NAME[index] : CharaEditorController.MALE_CLOTHES_NAME[index];
+            string clothName = CharaEditorController.FEMALE_CLOTHES_NAME[index];
             ChaListDefine.CategoryNo typeCategoryNo = charInfo.sex == 1 ? FEMALE_CLOTH_CATEGORYNO[index] : MALE_CLOTH_CATEGORYNO[index];
             CmpClothes cmpCloth = charInfo.cmpClothes[index];
             CharaEditorController cec = CharaEditorMgr.Instance.GetEditorController(charInfo);
@@ -2877,10 +2881,10 @@ namespace StudioCharaEditor
             // Done
             return clothDetails.ToArray();
         }
-    
+
         public static string[] ClothUpdateSequenceKeyBuilder(ChaControl charInfo, int index)
         {
-            string clothName = charInfo.sex == 1 ? CharaEditorController.FEMALE_CLOTHES_NAME[index] : CharaEditorController.MALE_CLOTHES_NAME[index];
+            string clothName = CharaEditorController.FEMALE_CLOTHES_NAME[index];
             List<string> keyList = new List<string>();
 
             string[] clothColorUpdateSequenceKeyBuilder(int colorIndex)

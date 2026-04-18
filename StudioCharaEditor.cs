@@ -5,12 +5,14 @@ using BepInEx.Logging;
 using HarmonyLib;
 using System.Reflection;
 using KKAPI;
+using KKAPI.Utilities;
 using UnityEngine;
+using KKAPI.Studio.UI.Toolbars;
 
 namespace StudioCharaEditor
 {
     [BepInPlugin(GUID, Name, Version)]
-    [BepInDependency(KoikatuAPI.GUID, "1.4")]
+    [BepInDependency(KoikatuAPI.GUID, "1.43")]
     [BepInDependency("mikke.pushUpAI", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.fairbair.hs2_boobsettings", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInProcess("StudioNEOV2.exe")]
@@ -18,7 +20,7 @@ namespace StudioCharaEditor
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "2.1.0";
+        public const string Version = "2.3.1";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -34,14 +36,14 @@ namespace StudioCharaEditor
         public static ConfigEntry<bool> UnlimitedSlider { get; private set; }
         public static ConfigEntry<bool> ShowSelectedThumb { get; private set; }
         public static ConfigEntry<bool> CloseListAfterSelect { get; private set; }
-
         public static ConfigEntry<bool> VerboseMessage { get; private set; }
-
         public static ConfigEntry<int> UIXPosition { get; private set; }
         public static ConfigEntry<int> UIYPosition { get; private set; }
         public static ConfigEntry<int> UIWidth { get; private set; }
         public static ConfigEntry<int> UIHeight { get; private set; }
         public static ConfigEntry<string> UILanguage { get; private set; }
+
+        internal SimpleToolbarToggle _toolbarCharEditor;
 
         //private ConfigEntry<string> configGreeting;
         //private ConfigEntry<bool> configDisplayGreeting;
@@ -69,7 +71,6 @@ namespace StudioCharaEditor
             UIHeight = Config.Bind("GUI", "Main GUI window height", 400, "Main window height, minimum 400, set it when UI is hided.");
             UILanguage = Config.Bind("GUI", "GUI Language", "default", "Language setting, valid setting can be found in HS2StudioCharaEditor.xml. Need reload.");
 
-
             /*
             configGreeting = Config.Bind("General",   // The section under which the option is shown
                                         "GreetingText",  // The key of the configuration option in the configuration file
@@ -92,8 +93,39 @@ namespace StudioCharaEditor
             // Patch
             //Harmony harmony = new Harmony(GUID);
             //harmony.PatchAll(Assembly.GetExecutingAssembly());
-            
+
+            // Toolbar Button
+            _toolbarCharEditor = new SimpleToolbarToggle(
+                "Graphics",
+                "Open Studio CharaEditor Inspector window. Hotkey: " + KeyShowUI.Value,
+                () => ResourceUtils.GetEmbeddedResource("toolbarbutton.png").LoadTexture(),
+                false,
+                this,
+                val => ToggleUI(val));
+            ToolbarManager.AddLeftToolbarControl(_toolbarCharEditor);
         }
 
+        private void ToggleUI(bool show)
+        {
+            //  Find UI in scene
+            var ui = UnityEngine.Object.FindObjectOfType<CharaEditorUI>();
+            if (ui != null)
+            {
+                ui.VisibleGUI = show;
+                if (show)
+                {
+                    CharaEditorMgr.Instance?.ReloadDictionary();
+                    ui.windowRect = new Rect(UIXPosition.Value, UIYPosition.Value,
+                        Math.Max(600, UIWidth.Value), Math.Max(400, UIHeight.Value));
+                }
+                else
+                {
+                    UIXPosition.Value = (int)ui.windowRect.x;
+                    UIYPosition.Value = (int)ui.windowRect.y;
+                    UIWidth.Value = (int)ui.windowRect.width;
+                    UIHeight.Value = (int)ui.windowRect.height;
+                }
+            }
+        }
     }
 }

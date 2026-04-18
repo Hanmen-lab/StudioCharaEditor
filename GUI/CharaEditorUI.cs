@@ -28,7 +28,7 @@ namespace StudioCharaEditor
 
         private readonly int windowID = 10123;
         private readonly string windowTitle = "Studio Charactor Editor";
-        private Rect windowRect = new Rect(0f, 300f, 600f, 400f);
+        internal Rect windowRect = new Rect(0f, 300f, 600f, 400f);
         private bool mouseInWindow = false;
 
         private TreeNodeObject lastSelectedTreeNode;
@@ -137,10 +137,18 @@ namespace StudioCharaEditor
             if (StudioCharaEditor.KeyShowUI.Value.IsDown())
             {
                 VisibleGUI = !VisibleGUI;
+
+                // Синхронизируем состояние кнопки
+                if (StudioCharaEditor.Instance._toolbarCharEditor != null)
+                    StudioCharaEditor.Instance._toolbarCharEditor.Toggled.OnNext(VisibleGUI);
+
                 if (VisibleGUI)
                 {
                     CharaEditorMgr.Instance.ReloadDictionary();
-                    windowRect = new Rect(StudioCharaEditor.UIXPosition.Value, StudioCharaEditor.UIYPosition.Value, Math.Max(600, StudioCharaEditor.UIWidth.Value), Math.Max(400, StudioCharaEditor.UIHeight.Value));
+                    windowRect = new Rect(StudioCharaEditor.UIXPosition.Value,
+                        StudioCharaEditor.UIYPosition.Value,
+                        Math.Max(600, StudioCharaEditor.UIWidth.Value),
+                        Math.Max(400, StudioCharaEditor.UIHeight.Value));
                 }
                 else
                 {
@@ -210,6 +218,41 @@ namespace StudioCharaEditor
             finally
             {
 
+            }
+        }
+
+        private void OnSelectChange(TreeNodeObject newSel)
+        {
+            lastSelectedTreeNode = newSel;
+            ociTarget = GetOCICharFromNode(newSel);
+            //Console.WriteLine("Select change to {0}", ociTarget);
+        }
+
+        protected TreeNodeObject GetCurrentSelectedNode()
+        {
+            return Studio.Studio.Instance.treeNodeCtrl.selectNode;
+        }
+
+        protected OCIChar GetOCICharFromNode(TreeNodeObject node)
+        {
+            if (node == null) return null;
+
+            var dic = Studio.Studio.Instance.dicInfo;
+            if (dic.ContainsKey(node))
+            {
+                ObjectCtrlInfo oci = dic[node];
+                if (oci is OCIChar)
+                {
+                    return oci as OCIChar;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+            else
+            {
+                return null;
             }
         }
 
@@ -868,6 +911,9 @@ namespace StudioCharaEditor
             if (GUI.Button(cbRect, ""))
             {
                 VisibleGUI = false;
+                // SYNC TOOLBAR BUTTON STATUS
+                if (StudioCharaEditor.Instance._toolbarCharEditor != null)
+                    StudioCharaEditor.Instance._toolbarCharEditor.Toggled.OnNext(false);
             }
             GUI.color = oldColor;
         }
@@ -1716,6 +1762,7 @@ namespace StudioCharaEditor
                 boxStyle.alignment = TextAnchor.MiddleCenter;
                 GUILayout.Box(redText(LC("No Photo")), boxStyle, GUILayout.Width(thumbW), GUILayout.Height(thumbH));
             }
+
             GUILayout.BeginVertical();
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC("Charactor name:"), largeLabel);
@@ -1759,49 +1806,50 @@ namespace StudioCharaEditor
                             savingFilename += ".png";
                         }
                     }
-                }, "Save Charactor", savingPath, "Images (*.png)|*.png|All files|*.*", ".png", OpenFileDialog.OpenSaveFileDialgueFlags.OFN_EXPLORER | OpenFileDialog.OpenSaveFileDialgueFlags.OFN_LONGNAMES);
+                }, "Save Character", savingPath, "Images (*.png)|*.png|All files|*.*", ".png", OpenFileDialog.OpenSaveFileDialgueFlags.OFN_EXPLORER | OpenFileDialog.OpenSaveFileDialgueFlags.OFN_LONGNAMES);
             }
             GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button(LC("Capture thumbnail photo"), btnstyle))
-            {
-                int capW = 1280;
-                int capH = 720;
-                int savW = 504;
-                int savH = 704;
-                RenderTextureFormat format = RenderTextureFormat.ARGB32;
-                int depthBuffer = 0;
-                RenderTexture targetTexture = Camera.main.targetTexture;
-                Camera.main.targetTexture = RenderTexture.GetTemporary(capW, capH, depthBuffer, format);
-                Camera.main.Render();
-                RenderTexture active = RenderTexture.active;
-                RenderTexture.active = Camera.main.targetTexture;
-                savingTexture = new Texture2D(savW, savH);
-                savingTexture.ReadPixels(new Rect((capW - savW) / 2.0f, (capH - savH) / 2.0f, (float)savW, (float)savH), 0, 0, false);
-                savingTexture.Apply();
-                RenderTexture.active = active;
-                RenderTexture.ReleaseTemporary(Camera.main.targetTexture);
-                Camera.main.targetTexture = targetTexture;
+            //GUILayout.BeginHorizontal();
+            //if (GUILayout.Button(LC("Capture thumbnail photo"), btnstyle))
+            //{
+            //    int capW = 1280;
+            //    int capH = 720;
+            //    int savW = 504;
+            //    int savH = 704;
+            //    RenderTextureFormat format = RenderTextureFormat.ARGB32;
+            //    int depthBuffer = 0;
+            //    RenderTexture targetTexture = Camera.main.targetTexture;
+            //    Camera.main.targetTexture = RenderTexture.GetTemporary(capW, capH, depthBuffer, format);
+            //    Camera.main.Render();
+            //    RenderTexture active = RenderTexture.active;
+            //    RenderTexture.active = Camera.main.targetTexture;
+            //    savingTexture = new Texture2D(savW, savH);
+            //    savingTexture.ReadPixels(new Rect((capW - savW) / 2.0f, (capH - savH) / 2.0f, (float)savW, (float)savH), 0, 0, false);
+            //    savingTexture.Apply();
+            //    RenderTexture.active = active;
+            //    RenderTexture.ReleaseTemporary(Camera.main.targetTexture);
+            //    Camera.main.targetTexture = targetTexture;
 
-                // shink size
-                if (!StudioCharaEditor.DoubleThumbnailSize.Value)
-                {
-                    TextureScale.Bilinear(savingTexture, savW / 2, savH / 2);
-                }
-            }
-            GUILayout.EndHorizontal();
+            //    // shink size
+            //    if (!StudioCharaEditor.DoubleThumbnailSize.Value)
+            //    {
+            //        TextureScale.Bilinear(savingTexture, savW / 2, savH / 2);
+            //    }
+            //}
+            //GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button(LC("Capture thumbnail photo 2"), btnstyle))
+            if (GUILayout.Button(LC("Capture Thumbnail Photo"), btnstyle))
             {
-                int capW = 1280;
-                int capH = 720;
+                int capW = 640;
+                int capH = 360;
                 int savW = 504;
                 int savH = 704;
 
                 byte[] capBuf = Studio.Studio.Instance.gameScreenShot.CreatePngScreen(capW, capH);
+
                 Texture2D capTex = new Texture2D(2, 2, TextureFormat.ARGB32, false);
                 capTex.LoadImage(capBuf);
-                Color[] capPixels = capTex.GetPixels((capW - savW) / 2, (capH - savH) / 2, savW, savH, 0);
+                Color[] capPixels = capTex.GetPixels((1280 - savW) / 2, (720 - savH) / 2, savW, savH, 0);
 
                 savingTexture = new Texture2D(savW, savH);
                 savingTexture.SetPixels(capPixels);
@@ -1960,40 +2008,6 @@ namespace StudioCharaEditor
             }
         }
 
-        private void OnSelectChange(TreeNodeObject newSel)
-        {
-            lastSelectedTreeNode = newSel;
-            ociTarget = GetOCICharFromNode(newSel);
-            //Console.WriteLine("Select change to {0}", ociTarget);
-        }
-
-        protected TreeNodeObject GetCurrentSelectedNode()
-        {
-            return Studio.Studio.Instance.treeNodeCtrl.selectNode;
-        }
-
-        protected OCIChar GetOCICharFromNode(TreeNodeObject node)
-        {
-            if (node == null) return null;
-
-            var dic = Studio.Studio.Instance.dicInfo;
-            if (dic.ContainsKey(node))
-            {
-                ObjectCtrlInfo oci = dic[node];
-                if (oci is OCIChar)
-                {
-                    return oci as OCIChar;
-                }
-                else
-                {
-                    return null;
-                }
-            }
-            else
-            {
-                return null;
-            }
-        }
 
         private string colorText(string text, string color = "ffffff")
         {

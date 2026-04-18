@@ -430,7 +430,8 @@ namespace StudioCharaEditor
             foreach (string clothName in myCategorySet[CT1_CTHS])
             {
                 //string setName = CT1_CTHS + "#" + clothName;
-                int clothIndex = myCategorySet[CT1_CTHS].IndexOf(clothName);
+                // Use FEMALE_CLOTHES_NAME as the standard array to always get the correct in-game slot ID
+                int clothIndex = Array.IndexOf(FEMALE_CLOTHES_NAME, clothName);
                 foreach (CharaDetailDefine cdd in CharaDetailSet.ClothDetailBuilder(chaCtrl, clothIndex))
                 {
                     CharaDetailInfo cdi = new CharaDetailInfo(chaCtrl, cdd);
@@ -778,7 +779,8 @@ namespace StudioCharaEditor
                 }
                 // create new ones
                 myDetailSet[setName].Clear();
-                int clothIndex = myCategorySet[CT1_CTHS].IndexOf(category2);
+                // Use FEMALE_CLOTHES_NAME as the standard array to always get the correct in-game slot ID
+                int clothIndex = Array.IndexOf(FEMALE_CLOTHES_NAME, category2);
                 foreach (CharaDetailDefine cdd in CharaDetailSet.ClothDetailBuilder(ociTarget.charInfo, clothIndex))
                 {
                     CharaDetailInfo cdi = new CharaDetailInfo(ociTarget.charInfo, cdd);

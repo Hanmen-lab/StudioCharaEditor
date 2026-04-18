@@ -140,15 +140,7 @@ namespace StudioCharaEditor
 
         private string getClothId(ChaControl chaCtrl)
         {
-            int[] maleIndex = new int[] { 0, 1, 4, 7 };
-            if (chaCtrl.sex == 0)
-            {
-                return KoiClothesOverlayMgr.MainClothesNames[maleIndex[clothIndex]];
-            }
-            else
-            {
-                return KoiClothesOverlayMgr.MainClothesNames[clothIndex];
-            }
+            return KoiClothesOverlayMgr.MainClothesNames[clothIndex];
         }
 
         public object GetClothOverlayTexData(ChaControl chaCtrl)
