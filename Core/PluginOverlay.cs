@@ -1,4 +1,4 @@
-﻿using AIChara;
+using AIChara;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,6 +29,20 @@ namespace StudioCharaEditor
             base.Get = GetSkinOverlayTex;
             base.Set = SetSkinOverlayTex;
             texName = category1 + texType;
+        }
+
+        /// <summary>
+        /// Constructor that allows the display label and TexType name to differ from category1+texType.
+        /// Used for detail overlays such as BodyDetailOver / FaceDetailOver.
+        /// </summary>
+        public SkinOverlayDetailDefine(string category1, string displayLabel, string texTypeName)
+        {
+            base.Key = category1 + "#Overlay#" + displayLabel;
+            base.Type = CharaDetailDefineType.SKIN_OVERLAY;
+            base.Catelog = CharaDetailDefineCatelog.OVERLAY;
+            base.Get = GetSkinOverlayTex;
+            base.Set = SetSkinOverlayTex;
+            texName = texTypeName;
         }
 
         private KoiSkinOverlayController getSkinOverlayCtrl(ChaControl chaCtrl)
@@ -282,6 +296,26 @@ namespace StudioCharaEditor
             return new CharaDetailDefine[] { over, under };
         }
 
+        /// <summary>
+        /// Builds Body Detail Over / Body Detail Under  (or Face Detail Over / Face Detail Under)
+        /// entries. category1 must be "Body" or "Face" so the key resolves to the existing Overlay tab.
+        /// TexType names used: {category1}DetailOver and {category1}DetailUnder.
+        /// </summary>
+        static public CharaDetailDefine[] BuildDetailSkinOverlayDefine(string category1)
+        {
+            // Display labels shown in the UI
+            string labelOver = category1 + " Detail " + SkinOverlayDetailDefine.TEXTYPE_OVER;
+            string labelUnder = category1 + " Detail " + SkinOverlayDetailDefine.TEXTYPE_UNDER;
+
+            // TexType enum names expected by KoiSkinOverlayX, e.g. "BodyDetailOver"
+            string texTypeOver = category1 + "Detail" + SkinOverlayDetailDefine.TEXTYPE_OVER;
+            string texTypeUnder = category1 + "Detail" + SkinOverlayDetailDefine.TEXTYPE_UNDER;
+
+            SkinOverlayDetailDefine over = new SkinOverlayDetailDefine(category1, labelOver, texTypeOver);
+            SkinOverlayDetailDefine under = new SkinOverlayDetailDefine(category1, labelUnder, texTypeUnder);
+            return new CharaDetailDefine[] { over, under };
+        }
+
         static public CharaDetailDefine[] BuildClothOverlayDefine(string category2, int index)
         {
             CharaDetailDefine sep = new CharaDetailDefine
@@ -296,7 +330,7 @@ namespace StudioCharaEditor
             {
                 Key = CharaEditorController.CT1_CTHS + "#" + category2 + "#Overlay hide base textrue",
                 Type = CharaDetailDefine.CharaDetailDefineType.TOGGLE,
-                Get = (chaCtrl) => 
+                Get = (chaCtrl) =>
                 {
                     ClothesTexData texData = (ClothesTexData)ovl.GetClothOverlayTexData(chaCtrl);
                     if (texData != null)
