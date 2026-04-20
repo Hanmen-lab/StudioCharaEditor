@@ -13,6 +13,7 @@ namespace StudioCharaEditor
 {
     [BepInPlugin(GUID, Name, Version)]
     [BepInDependency(KoikatuAPI.GUID, "1.43")]
+    [BepInDependency("KCOX", "7.0")]
     [BepInDependency("mikke.pushUpAI", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.fairbair.hs2_boobsettings", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInProcess("StudioNEOV2.exe")]
