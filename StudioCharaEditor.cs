@@ -15,6 +15,7 @@ namespace StudioCharaEditor
     [BepInDependency(KoikatuAPI.GUID, "1.43")]
     [BepInDependency("KCOX", "7.0")]
     [BepInDependency("com.animal42069.studiobetterpenetration", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency("com.hooh.hooah", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("mikke.pushUpAI", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.fairbair.hs2_boobsettings", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInProcess("StudioNEOV2")]
@@ -47,6 +48,7 @@ namespace StudioCharaEditor
         public static ConfigEntry<string> UILanguage { get; private set; }
 
         internal SimpleToolbarToggle _toolbarCharEditor;
+        private Harmony harmony;
 
         //private ConfigEntry<string> configGreeting;
         //private ConfigEntry<bool> configDisplayGreeting;
@@ -94,9 +96,10 @@ namespace StudioCharaEditor
             UnityEngine.Object.DontDestroyOnLoad(gameObject);
             CharaEditorMgr.Install(gameObject);
 
-            // Patch
-            //Harmony harmony = new Harmony(GUID);
-            //harmony.PatchAll(Assembly.GetExecutingAssembly());
+            // Patch compatibility hooks that must run after optional plugin dependencies load.
+            harmony = new Harmony(GUID);
+            PluginBetterPenetration.InstallHarmonyPatches(harmony);
+            PluginHooahComponents.Initialize(harmony);
 
             // Toolbar Button
             _toolbarCharEditor = new SimpleToolbarToggle(

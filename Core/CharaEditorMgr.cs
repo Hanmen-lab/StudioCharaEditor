@@ -71,6 +71,26 @@ namespace StudioCharaEditor
             gui.ResetGui();
         }
 
+        public void RunAfterFrames(int frameCount, Action action)
+        {
+            if (action == null)
+            {
+                return;
+            }
+
+            StartCoroutine(RunAfterFramesCo(frameCount, action));
+        }
+
+        private IEnumerator RunAfterFramesCo(int frameCount, Action action)
+        {
+            for (int i = 0; i < frameCount; i++)
+            {
+                yield return null;
+            }
+
+            action();
+        }
+
         public void HouseKeeping(bool isVisible)
         {
             if (!isVisible)

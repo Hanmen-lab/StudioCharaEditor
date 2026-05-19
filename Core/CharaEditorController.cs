@@ -875,7 +875,7 @@ namespace StudioCharaEditor
 
             if (updateColor)
             {
-                chaCtrl.ChangeCustomClothes(partIndex, true, updatePtn1, updatePtn2, updatePtn3);
+                CharaDetailSet.updateClothCustomTexture(chaCtrl, partIndex, true, updatePtn1, updatePtn2, updatePtn3);
                 UpdateDetailInfo_ClothType(category2);
             }
 

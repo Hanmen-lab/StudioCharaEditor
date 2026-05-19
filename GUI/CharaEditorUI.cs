@@ -52,6 +52,8 @@ namespace StudioCharaEditor
         private Dictionary<string, string> searchWordPool = new Dictionary<string, string>();
         private readonly Dictionary<string, List<CustomSelectInfo>> selectorListPool = new Dictionary<string, List<CustomSelectInfo>>();
         private readonly Dictionary<string, Dictionary<int, int>> selectorIndexPool = new Dictionary<string, Dictionary<int, int>>();
+        private readonly Dictionary<string, SelectorRenderRange> selectorRenderRangePool = new Dictionary<string, SelectorRenderRange>();
+        private readonly Dictionary<string, SelectorSearchState> selectorSearchPool = new Dictionary<string, SelectorSearchState>();
         private readonly Dictionary<string, ColorSwatch> colorSwatchPool = new Dictionary<string, ColorSwatch>();
 
         // save
@@ -68,16 +70,34 @@ namespace StudioCharaEditor
         private GUIStyle windowStyle;
         private GUIStyle categoryButtonStyle;
         private GUIStyle texTextStyle;
+        private GUIStyle colorSwatchButtonStyle;
+        private GUIStyle closeButtonStyle;
         private global::Studio.CameraControl.NoCtrlFunc cameraNoCtrlCondition;
+        private CharaEditorTheme theme;
         private Vector2 leftScroll = Vector2.zero;
         private Vector2 rightScroll = Vector2.zero;
+        private bool resizingWindow = false;
+        private Vector2 resizeStartMouse = Vector2.zero;
+        private Vector2 resizeStartSize = Vector2.zero;
         private int namew = 100;
         private float thumbSize = 100;
         private float thumbSizeSmall = 70;
         private float thumbBtnHeight = 40;
+        private GUIStyle resizeGripStyle;
         private const float ThumbListRowGap = 4f;
         private const int ColorSwatchWidth = 74;
         private const int ColorSwatchHeight = 20;
+        private const float MinWindowWidth = 600f;
+        private const float MinWindowHeight = 400f;
+        private const float ResizeGripSize = 22f;
+        private const float ResizeGripReserve = 28f;
+        private const float ThinSliderHeight = 20f;
+        private const float ThinSliderTrackHeight = 2f;
+        private const float ThinSliderThumbSize = 7f;
+        private const float ColorDragApplyInterval = 0.06f;
+        private const float SelectorSearchDelay = 0.25f;
+        private const int SelectorSearchBatchSize = 350;
+        private readonly Dictionary<string, PendingColorChange> pendingColorChanges = new Dictionary<string, PendingColorChange>();
         private static readonly string[] HairSetKeys =
         {
             "Hair#BackHair",
@@ -103,6 +123,38 @@ namespace StudioCharaEditor
             public int ColorKey = int.MinValue;
         }
 
+        private class PendingColorChange
+        {
+            public ChaControl ChaCtrl;
+            public string Name;
+            public CharaDetailInfo DetailInfo;
+            public Color Color;
+            public float LastApplyTime;
+            public bool HasPending;
+        }
+
+        private class SelectorRenderRange
+        {
+            public int FirstVisible;
+            public int LastVisible;
+            public int FilteredCount;
+            public bool InSearching;
+            public string SearchText;
+            public int InfoCount;
+            public bool IsValid;
+        }
+
+        private class SelectorSearchState
+        {
+            public string SearchText;
+            public List<int> Matches = new List<int>();
+            public int NextIndex;
+            public int InfoCount;
+            public bool Complete;
+            public float LastInputTime;
+            public int LastBuildFrame = -1;
+        }
+
         // Localize
         public Dictionary<string, string> curLocalizationDict;
 
@@ -121,10 +173,13 @@ namespace StudioCharaEditor
             catelogIndex2 = new int[] { 1, 1, 2, 0, 0 };
             detailPageSelect = SelectMode.Normal;
             ClearSelectorCache();
+            selectorRenderRangePool.Clear();
+            selectorSearchPool.Clear();
         }
 
         private void Start()
         {
+            theme = new CharaEditorTheme();
             largeLabel = new GUIStyle("label");
             largeLabel.fontSize = 16;
             btnstyle = new GUIStyle("button");
@@ -142,6 +197,8 @@ namespace StudioCharaEditor
 
         private void OnDestroy()
         {
+            FlushPendingColorChanges(true);
+
             foreach (ColorSwatch swatch in colorSwatchPool.Values)
             {
                 if (swatch.Texture != null)
@@ -151,6 +208,12 @@ namespace StudioCharaEditor
             }
             colorSwatchPool.Clear();
 
+            if (theme != null)
+            {
+                theme.Dispose();
+                theme = null;
+            }
+
             if (savingTexture != null)
             {
                 Destroy(savingTexture);
@@ -158,12 +221,213 @@ namespace StudioCharaEditor
             }
         }
 
+        private void EnsureTheme()
+        {
+            if (theme == null)
+            {
+                theme = new CharaEditorTheme();
+            }
+
+            theme.Ensure(GUI.skin);
+            if (theme.Skin == null)
+            {
+                return;
+            }
+
+            largeLabel = theme.LargeLabelStyle;
+            btnstyle = theme.PrimaryButtonStyle;
+            windowStyle = theme.WindowStyle;
+            categoryButtonStyle = theme.CategoryButtonStyle;
+            texTextStyle = theme.TextureTextStyle;
+            colorSwatchButtonStyle = theme.ColorSwatchButtonStyle;
+            closeButtonStyle = theme.CloseButtonStyle;
+            EnsureResizeGripStyle();
+        }
+
+        private void EnsureResizeGripStyle()
+        {
+            if (resizeGripStyle != null)
+            {
+                return;
+            }
+
+            resizeGripStyle = new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.LowerRight,
+                fontSize = 15,
+                fontStyle = FontStyle.Bold,
+                padding = new RectOffset(0, 2, 0, 0),
+                margin = new RectOffset(0, 0, 0, 0)
+            };
+            resizeGripStyle.normal.textColor = new Color(0.58f, 0.66f, 0.70f, 0.85f);
+            resizeGripStyle.hover.textColor = Color.white;
+            resizeGripStyle.active.textColor = Color.white;
+        }
+
+        private bool DrawModernToggle(bool value, string label, params GUILayoutOption[] options)
+        {
+            GUIStyle labelStyle = GUI.skin.toggle ?? GUI.skin.label;
+            GUIContent content = new GUIContent(label);
+            float labelWidth = Math.Max(1f, labelStyle.CalcSize(content).x);
+            Rect rect = GUILayoutUtility.GetRect(25f + labelWidth, 20f, options);
+            Rect iconRect = new Rect(rect.x, rect.y + (rect.height - 16f) * 0.5f, 16f, 16f);
+            Rect labelRect = new Rect(iconRect.xMax + 6f, rect.y, Math.Max(0f, rect.xMax - iconRect.xMax - 6f), rect.height);
+
+            Event evt = Event.current;
+            if (GUI.enabled && evt.type == EventType.MouseDown && evt.button == 0 && rect.Contains(evt.mousePosition))
+            {
+                value = !value;
+                evt.Use();
+            }
+
+            if (evt.type == EventType.Repaint)
+            {
+                Texture2D toggleTexture = value ? theme?.ToggleOnTexture : theme?.ToggleOffTexture;
+                if (toggleTexture != null)
+                {
+                    GUI.DrawTexture(iconRect, toggleTexture, ScaleMode.ScaleToFit, true);
+                }
+                else
+                {
+                    GUI.Box(iconRect, value ? "X" : string.Empty);
+                }
+                labelStyle.Draw(labelRect, content, false, false, value, false);
+            }
+
+            return value;
+        }
+
+        private int GetValueFieldWidth(string valueText, int minWidth)
+        {
+            int dynamicWidth = (valueText == null ? 0 : valueText.Length) * 8 + 18;
+            return Math.Min(96, Math.Max(minWidth, dynamicWidth));
+        }
+
+        private float DrawThinSlider(float value, float min, float max)
+        {
+            Rect sliderRect = GUILayoutUtility.GetRect(40f, 10000f, ThinSliderHeight, ThinSliderHeight, GUILayout.ExpandWidth(true));
+            Rect trackRect = new Rect(
+                sliderRect.x,
+                sliderRect.y + (sliderRect.height - ThinSliderTrackHeight) * 0.5f,
+                sliderRect.width,
+                ThinSliderTrackHeight);
+
+            if (max <= min)
+            {
+                max = min + 0.0001f;
+            }
+
+            int controlId = GUIUtility.GetControlID("StudioCharaEditorThinSlider".GetHashCode(), FocusType.Passive, sliderRect);
+            Event evt = Event.current;
+            switch (evt.GetTypeForControl(controlId))
+            {
+                case EventType.MouseDown:
+                    if (GUI.enabled && evt.button == 0 && sliderRect.Contains(evt.mousePosition))
+                    {
+                        GUIUtility.hotControl = controlId;
+                        value = ValueFromSliderMouse(trackRect, min, max, evt.mousePosition.x);
+                        evt.Use();
+                    }
+                    break;
+                case EventType.MouseDrag:
+                    if (GUIUtility.hotControl == controlId)
+                    {
+                        value = ValueFromSliderMouse(trackRect, min, max, evt.mousePosition.x);
+                        evt.Use();
+                    }
+                    break;
+                case EventType.MouseUp:
+                    if (GUIUtility.hotControl == controlId)
+                    {
+                        GUIUtility.hotControl = 0;
+                        evt.Use();
+                    }
+                    break;
+            }
+
+            float normalized = Mathf.InverseLerp(min, max, value);
+            float thumbX = Mathf.Lerp(trackRect.xMin, trackRect.xMax, normalized) - ThinSliderThumbSize * 0.5f;
+            Rect thumbRect = new Rect(
+                thumbX,
+                sliderRect.y + (sliderRect.height - ThinSliderThumbSize) * 0.5f,
+                ThinSliderThumbSize,
+                ThinSliderThumbSize);
+
+            GUI.Box(trackRect, GUIContent.none, GUI.skin.horizontalSlider);
+            GUI.Box(thumbRect, GUIContent.none, GUI.skin.horizontalSliderThumb);
+            return value;
+        }
+
+        private float ValueFromSliderMouse(Rect trackRect, float min, float max, float mouseX)
+        {
+            if (trackRect.width <= 0f)
+            {
+                return min;
+            }
+
+            float normalized = Mathf.Clamp01((mouseX - trackRect.xMin) / trackRect.width);
+            return Mathf.Lerp(min, max, normalized);
+        }
+
+        private void DrawResizeGrip()
+        {
+            EnsureResizeGripStyle();
+
+            Rect gripRect = new Rect(
+                windowRect.width - ResizeGripSize - 4f,
+                windowRect.height - ResizeGripSize - 4f,
+                ResizeGripSize,
+                ResizeGripSize);
+            int controlId = GUIUtility.GetControlID("StudioCharaEditorResizeGrip".GetHashCode(), FocusType.Passive, gripRect);
+            Event evt = Event.current;
+
+            switch (evt.GetTypeForControl(controlId))
+            {
+                case EventType.MouseDown:
+                    if (evt.button == 0 && gripRect.Contains(evt.mousePosition))
+                    {
+                        resizingWindow = true;
+                        resizeStartMouse = evt.mousePosition;
+                        resizeStartSize = new Vector2(windowRect.width, windowRect.height);
+                        GUIUtility.hotControl = controlId;
+                        evt.Use();
+                    }
+                    break;
+                case EventType.MouseDrag:
+                    if (resizingWindow && GUIUtility.hotControl == controlId)
+                    {
+                        Vector2 delta = evt.mousePosition - resizeStartMouse;
+                        windowRect.width = Math.Max(MinWindowWidth, resizeStartSize.x + delta.x);
+                        windowRect.height = Math.Max(MinWindowHeight, resizeStartSize.y + delta.y);
+                        evt.Use();
+                    }
+                    break;
+                case EventType.MouseUp:
+                    if (GUIUtility.hotControl == controlId)
+                    {
+                        resizingWindow = false;
+                        GUIUtility.hotControl = 0;
+                        evt.Use();
+                    }
+                    break;
+            }
+
+            GUI.Label(gripRect, "///", resizeGripStyle);
+        }
+
         private void OnGUI()
         {
             if (VisibleGUI)
             {
+                GUISkin previousSkin = GUI.skin;
                 try
                 {
+                    EnsureTheme();
+                    if (theme != null && theme.Skin != null)
+                    {
+                        GUI.skin = theme.Skin;
+                    }
+
                     if (windowStyle == null)
                     {
                         windowStyle = new GUIStyle(GUI.skin.window);
@@ -181,14 +445,25 @@ namespace StudioCharaEditor
                 {
                     Console.WriteLine(ex);
                 }
+                finally
+                {
+                    GUI.skin = previousSkin;
+                }
             }
         }
 
         private void Update()
         {
+            FlushPendingColorChanges(false);
+
             // hotkey check
             if (StudioCharaEditor.KeyShowUI.Value.IsDown())
             {
+                if (VisibleGUI)
+                {
+                    FlushPendingColorChanges(true);
+                }
+
                 VisibleGUI = !VisibleGUI;
 
                 // Синхронизируем состояние кнопки
@@ -200,8 +475,8 @@ namespace StudioCharaEditor
                     CharaEditorMgr.Instance.ReloadDictionary();
                     windowRect = new Rect(StudioCharaEditor.UIXPosition.Value,
                         StudioCharaEditor.UIYPosition.Value,
-                        Math.Max(600, StudioCharaEditor.UIWidth.Value),
-                        Math.Max(400, StudioCharaEditor.UIHeight.Value));
+                        Math.Max(MinWindowWidth, StudioCharaEditor.UIWidth.Value),
+                        Math.Max(MinWindowHeight, StudioCharaEditor.UIHeight.Value));
                 }
                 else
                 {
@@ -233,6 +508,185 @@ namespace StudioCharaEditor
             }
         }
 
+        private string GetColorChangeKey(ChaControl chaCtrl, CharaDetailInfo dInfo)
+        {
+            int charId = chaCtrl != null ? chaCtrl.GetInstanceID() : 0;
+            string detailKey = dInfo?.DetailDefine?.Key ?? string.Empty;
+            return charId.ToString() + "|" + detailKey;
+        }
+
+        private void QueueColorChange(ChaControl chaCtrl, string name, CharaDetailInfo dInfo, Color color, bool force = false)
+        {
+            if (chaCtrl == null || dInfo?.DetailDefine?.Set == null)
+            {
+                return;
+            }
+
+            string key = GetColorChangeKey(chaCtrl, dInfo);
+            if (!pendingColorChanges.TryGetValue(key, out PendingColorChange pending))
+            {
+                pending = new PendingColorChange();
+                pendingColorChanges[key] = pending;
+            }
+
+            pending.ChaCtrl = chaCtrl;
+            pending.Name = name;
+            pending.DetailInfo = dInfo;
+            pending.Color = color;
+            pending.HasPending = true;
+
+            float now = Time.realtimeSinceStartup;
+            if (force || pending.LastApplyTime <= 0f || now - pending.LastApplyTime >= ColorDragApplyInterval)
+            {
+                ApplyPendingColorChange(key, pending);
+            }
+        }
+
+        private void FlushPendingColorChanges(bool force)
+        {
+            if (pendingColorChanges.Count == 0)
+            {
+                return;
+            }
+
+            float now = Time.realtimeSinceStartup;
+            List<string> keysToRemove = null;
+            foreach (KeyValuePair<string, PendingColorChange> pair in pendingColorChanges)
+            {
+                PendingColorChange pending = pair.Value;
+                if (pending == null || pending.ChaCtrl == null || pending.DetailInfo?.DetailDefine == null)
+                {
+                    if (keysToRemove == null)
+                    {
+                        keysToRemove = new List<string>();
+                    }
+                    keysToRemove.Add(pair.Key);
+                    continue;
+                }
+
+                if (pending.HasPending && (force || now - pending.LastApplyTime >= ColorDragApplyInterval))
+                {
+                    ApplyPendingColorChange(pair.Key, pending);
+                }
+            }
+
+            if (keysToRemove != null)
+            {
+                for (int i = 0; i < keysToRemove.Count; i++)
+                {
+                    pendingColorChanges.Remove(keysToRemove[i]);
+                }
+            }
+        }
+
+        private void ApplyPendingColorChange(string key, PendingColorChange pending)
+        {
+            if (pending == null || pending.ChaCtrl == null || pending.DetailInfo?.DetailDefine == null)
+            {
+                pendingColorChanges.Remove(key);
+                return;
+            }
+
+            CharaDetailDefine detail = pending.DetailInfo.DetailDefine;
+            object current = detail.Get != null ? detail.Get(pending.ChaCtrl) : null;
+            if (current is Color currentColor && currentColor == pending.Color)
+            {
+                pending.HasPending = false;
+                pending.LastApplyTime = Time.realtimeSinceStartup;
+                return;
+            }
+
+            detail.Set(pending.ChaCtrl, pending.Color);
+            if (detail.Upd != null && !LaterUpdate)
+            {
+                detail.Upd(pending.ChaCtrl);
+            }
+            accessoryMultiAdjust(pending.ChaCtrl, pending.Name, pending.DetailInfo, pending.Color);
+
+            pending.HasPending = false;
+            pending.LastApplyTime = Time.realtimeSinceStartup;
+        }
+
+        private SelectorRenderRange GetSelectorRenderRange(
+            string selectorKey,
+            List<CustomSelectInfo> infoList,
+            bool inSearching,
+            string searchText,
+            int filteredCount,
+            Vector2 scrollPosition,
+            float rowHeight,
+            int showBefore,
+            int showAfter)
+        {
+            if (!selectorRenderRangePool.TryGetValue(selectorKey, out SelectorRenderRange range))
+            {
+                range = new SelectorRenderRange();
+                selectorRenderRangePool[selectorKey] = range;
+            }
+
+            bool searchChanged = range.InSearching != inSearching || !string.Equals(range.SearchText, searchText);
+            bool countChanged = range.InfoCount != (infoList?.Count ?? 0) || range.FilteredCount != filteredCount;
+            if (Event.current.type == EventType.Layout || !range.IsValid || searchChanged || countChanged)
+            {
+                int firstVisible = rowHeight > 0f
+                    ? Math.Max(0, (int)(scrollPosition.y / rowHeight) - showBefore)
+                    : 0;
+                int lastVisible = Math.Min(filteredCount - 1, firstVisible + showBefore + showAfter + 1);
+
+                range.FirstVisible = filteredCount > 0 ? firstVisible : 0;
+                range.LastVisible = lastVisible;
+                range.FilteredCount = filteredCount;
+                range.InSearching = inSearching;
+                range.SearchText = searchText;
+                range.InfoCount = infoList?.Count ?? 0;
+                range.IsValid = true;
+            }
+
+            return range;
+        }
+
+        private SelectorSearchState GetSelectorSearchState(string selectorKey, List<CustomSelectInfo> infoList, string searchText)
+        {
+            if (!selectorSearchPool.TryGetValue(selectorKey, out SelectorSearchState state))
+            {
+                state = new SelectorSearchState();
+                selectorSearchPool[selectorKey] = state;
+            }
+
+            int infoCount = infoList?.Count ?? 0;
+            if (!string.Equals(state.SearchText, searchText) || state.InfoCount != infoCount)
+            {
+                state.SearchText = searchText;
+                state.InfoCount = infoCount;
+                state.Matches.Clear();
+                state.NextIndex = 0;
+                state.Complete = string.IsNullOrWhiteSpace(searchText);
+                state.LastInputTime = Time.realtimeSinceStartup;
+                state.LastBuildFrame = -1;
+            }
+
+            if (!state.Complete &&
+                Event.current.type == EventType.Layout &&
+                Time.realtimeSinceStartup - state.LastInputTime >= SelectorSearchDelay &&
+                state.LastBuildFrame != Time.frameCount)
+            {
+                state.LastBuildFrame = Time.frameCount;
+                int endIndex = Math.Min(infoCount, state.NextIndex + SelectorSearchBatchSize);
+                for (int i = state.NextIndex; i < endIndex; i++)
+                {
+                    if (SelectorMatchesSearch(infoList[i], true, searchText))
+                    {
+                        state.Matches.Add(i);
+                    }
+                }
+
+                state.NextIndex = endIndex;
+                state.Complete = state.NextIndex >= infoCount;
+            }
+
+            return state;
+        }
+
         private void FuncWindowGUI(int winID)
         {
             try
@@ -261,7 +715,8 @@ namespace StudioCharaEditor
                         throw new Exception("Unknown gui mode");
                 }
 
-                GUI.DragWindow();
+                DrawResizeGrip();
+                GUI.DragWindow(new Rect(0f, 0f, Math.Max(0f, windowRect.width - 24f), 24f));
             }
             catch (Exception ex)
             {
@@ -385,7 +840,7 @@ namespace StudioCharaEditor
                         if (cec.Category2GetFuncDict.ContainsKey(checkKey))
                         {
                             bool oldV = (bool)cec.Category2GetFuncDict[checkKey](cec);
-                            bool newV = GUILayout.Toggle(oldV, LC(title));
+                            bool newV = DrawModernToggle(oldV, LC(title));
                             if (oldV != newV)
                             {
                                 cec.Category2SetFuncDict[checkKey](cec, newV);
@@ -488,7 +943,7 @@ namespace StudioCharaEditor
                 {
                     // accessory sort mode
                     GUILayout.BeginHorizontal();
-                    bool accSortMode = GUILayout.Toggle(cec.accSortByParent, LC("Sort by parent"));
+                    bool accSortMode = DrawModernToggle(cec.accSortByParent, LC("Sort by parent"));
                     if (accSortMode != cec.accSortByParent)
                     {
                         cec.accSortByParent = accSortMode;
@@ -692,10 +1147,10 @@ namespace StudioCharaEditor
 
                         // detail page copy/paste
                         GUILayout.BeginVertical(GUI.skin.box);
-                        copySlotAutoArrange = GUILayout.Toggle(copySlotAutoArrange, LC("Auto arrange empty slot, create new if needed"));
+                        copySlotAutoArrange = DrawModernToggle(copySlotAutoArrange, LC("Auto arrange empty slot, create new if needed"));
                         GUILayout.BeginHorizontal();
-                        copySlotMirrorParent = GUILayout.Toggle(copySlotMirrorParent, LC("Mirror accessory parent"));
-                        copySlotMirrorAdjust = GUILayout.Toggle(copySlotMirrorAdjust, LC("Mirror accessory adjustment"));
+                        copySlotMirrorParent = DrawModernToggle(copySlotMirrorParent, LC("Mirror accessory parent"));
+                        copySlotMirrorAdjust = DrawModernToggle(copySlotMirrorAdjust, LC("Mirror accessory adjustment"));
                         GUILayout.EndHorizontal();
                         GUILayout.BeginHorizontal();
                         if (GUILayout.Button(LC("OK")))
@@ -805,7 +1260,7 @@ namespace StudioCharaEditor
                                 }
                                 if (selectBuffer.ContainsKey(dkey))
                                 {
-                                    selectBuffer[dkey] = GUILayout.Toggle(selectBuffer[dkey], LC(dname));
+                                    selectBuffer[dkey] = DrawModernToggle(selectBuffer[dkey], LC(dname));
                                 }
                                 else
                                 {
@@ -927,7 +1382,7 @@ namespace StudioCharaEditor
                 GUILayout.EndHorizontal();
 
                 // control buttons
-                float cbwidth = (fullw - 4 * 3) / 4;
+                float cbwidth = (fullw - ResizeGripReserve - 4 * 3) / 4;
                 GUILayout.FlexibleSpace();
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button(LC("Copy All"), btnstyle, GUILayout.Width(cbwidth)))
@@ -963,21 +1418,19 @@ namespace StudioCharaEditor
                     coordinateName = string.Format("{0}_cood", savingChaFile.parameter.fullname);
                     guiMode = GuiModeType.SAVE;
                 }
+                GUILayout.Space(ResizeGripReserve);
                 GUILayout.EndHorizontal();
             }
 
             // close btn
-            Rect cbRect = new Rect(windowRect.width - 16, 3, 13, 13);
-            Color oldColor = GUI.color;
-            GUI.color = Color.red;
-            if (GUI.Button(cbRect, ""))
+            Rect cbRect = new Rect(windowRect.width - 18, 3, 14, 14);
+            if (GUI.Button(cbRect, "", closeButtonStyle ?? GUI.skin.button))
             {
                 VisibleGUI = false;
                 // SYNC TOOLBAR BUTTON STATUS
                 if (StudioCharaEditor.Instance._toolbarCharEditor != null)
                     StudioCharaEditor.Instance._toolbarCharEditor.Toggled.OnNext(false);
             }
-            GUI.color = oldColor;
         }
 
         private void guiRenderSlider(ChaControl chaCtrl, string name, CharaDetailInfo dInfo)
@@ -994,12 +1447,12 @@ namespace StudioCharaEditor
             if (preciseMode)
             {
                 txtV = string.Format("{0:F3}", oldV * 100.0);
-                inputw = 60;
+                inputw = GetValueFieldWidth(txtV, 68);
             }
             else
             {
                 txtV = string.Format("{0:F0}", oldV * 100.0);
-                inputw = 35;
+                inputw = GetValueFieldWidth(txtV, 48);
             }
             string newTxtV = GUILayout.TextField(txtV, GUILayout.Width(inputw));
             if (!newTxtV.Equals(txtV))
@@ -1030,7 +1483,7 @@ namespace StudioCharaEditor
                 sldMax = Math.Max(2, newV);
                 sldMin = Math.Min(-1, newV);
             }
-            float sldV = GUILayout.HorizontalSlider(newV, sldMin, sldMax);
+            float sldV = DrawThinSlider(newV, sldMin, sldMax);
             if (sldV != newV)
                 newV = sldV;
             if (preciseMode)
@@ -1077,16 +1530,14 @@ namespace StudioCharaEditor
             {
                 if (color != oldC)
                 {
-                    dInfo.DetailDefine.Set(chaCtrl, color);
-                    if (dInfo.DetailDefine.Upd != null && !LaterUpdate) dInfo.DetailDefine.Upd(chaCtrl);
-                    accessoryMultiAdjust(chaCtrl, name, dInfo, color);
+                    QueueColorChange(chaCtrl, name, dInfo, color);
                 }
             }
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
             Texture2D colorTex = GetColorSwatchTexture(dInfo.DetailDefine.Key, oldC);
-            if (GUILayout.Button(colorTex, GUILayout.Height(ColorSwatchHeight), GUILayout.Width(ColorSwatchWidth)))
+            if (GUILayout.Button(colorTex, colorSwatchButtonStyle ?? GUI.skin.button, GUILayout.Height(ColorSwatchHeight), GUILayout.Width(ColorSwatchWidth)))
             {
                 Studio.Studio studio = Studio.Studio.Instance;
                 studio.colorPalette.Setup(LC(name), oldC, new Action<Color>(onChangeColor), true);
@@ -1096,7 +1547,7 @@ namespace StudioCharaEditor
             GUILayout.Label(formatColor(oldC));
             GUILayout.FlexibleSpace();
             if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
-                onChangeColor((Color)dInfo.RevertValue);
+                QueueColorChange(chaCtrl, name, dInfo, (Color)dInfo.RevertValue, true);
             GUILayout.EndHorizontal();
         }
 
@@ -1109,10 +1560,10 @@ namespace StudioCharaEditor
             float thumbBtnWidth = rightw - namew - thumbSize - 60;
             float thumbVSpace = (thumbSize - thumbBtnHeight) / 2;
             float thumbRowHeight = thumbSize + ThumbListRowGap;
-            float thumbListMinH = thumbSize * 2 + 20;// 130;
-            float thumbListMaxH = fullh * 0.7f;// 350;
+            float thumbListMinH = thumbSize * 3 + 28f;
+            float thumbListMaxH = Math.Max(thumbListMinH, fullh * 0.82f);
             int thumbShowBefore = 1;
-            int thumbShowAfter = (int)(thumbListMaxH / thumbSize) + 1;
+            int thumbShowAfter = (int)Math.Ceiling(thumbListMaxH / thumbRowHeight) + 2;
             bool thumbList = name != "Acc Parent" && name != "Acc Category";
             bool showSmallThumbMode = StudioCharaEditor.ShowSelectedThumb.Value;
             bool unexpandOnSelect = StudioCharaEditor.CloseListAfterSelect.Value;
@@ -1173,6 +1624,10 @@ namespace StudioCharaEditor
                     string texKey = info.assetBundle + "+" + info.assetName;
                     if (!thumbPool[name].ContainsKey(texKey))
                     {
+                        if (Event.current.type != EventType.Repaint)
+                        {
+                            return Texture2D.blackTexture;
+                        }
                         thumbPool[name][texKey] = CommonLib.LoadAsset<Texture2D>(info.assetBundle, info.assetName, false, ""); ;
                     }
                     return thumbPool[name][texKey];
@@ -1274,14 +1729,17 @@ namespace StudioCharaEditor
 
                 // draw drop list
                 string searchText = inSearching ? searchWordPool[name] : null;
+                SelectorSearchState searchState = inSearching ? GetSelectorSearchState(selectorKey, infoLst, searchText) : null;
+                List<int> filteredIndices = searchState?.Matches;
+                int filteredCount = inSearching ? (filteredIndices?.Count ?? 0) : infoLst.Count;
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(" ", GUILayout.Width(namew));
                 scrollPool[name] = GUILayout.BeginScrollView(scrollPool[name], GUI.skin.box, GUILayout.MinHeight(thumbListMinH), GUILayout.MaxHeight(thumbListMaxH));
                 if (thumbList)
                 {
-                    int filteredCount = GetFilteredSelectorCount(infoLst, inSearching, searchText);
-                    int firstVisible = Math.Max(0, (int)(scrollPool[name].y / thumbRowHeight) - thumbShowBefore);
-                    int lastVisible = Math.Min(filteredCount - 1, firstVisible + thumbShowBefore + thumbShowAfter + 1);
+                    SelectorRenderRange range = GetSelectorRenderRange(selectorKey, infoLst, inSearching, searchText, filteredCount, scrollPool[name], thumbRowHeight, thumbShowBefore, thumbShowAfter);
+                    int firstVisible = range.FirstVisible;
+                    int lastVisible = range.LastVisible;
 
                     if (firstVisible > 0)
                     {
@@ -1299,28 +1757,16 @@ namespace StudioCharaEditor
                     }
                     else
                     {
-                        int filteredIndex = 0;
-                        for (int i = 0; i < infoLst.Count; i++)
+                        for (int filteredIndex = firstVisible; filteredIndex <= lastVisible; filteredIndex++)
                         {
-                            CustomSelectInfo info = infoLst[i];
-                            if (!SelectorMatchesSearch(info, true, searchText))
-                            {
-                                continue;
-                            }
-
-                            if (filteredIndex < firstVisible)
-                            {
-                                filteredIndex++;
-                                continue;
-                            }
-                            if (filteredIndex > lastVisible)
+                            if (filteredIndices == null || filteredIndex < 0 || filteredIndex >= filteredIndices.Count)
                             {
                                 break;
                             }
 
+                            CustomSelectInfo info = infoLst[filteredIndices[filteredIndex]];
                             DrawThumbSelectorRow(info, oldId, thumbVSpace, thumbBtnWidth, getThumbTex, onChangeId);
                             lastDrawn = filteredIndex;
-                            filteredIndex++;
                         }
                     }
 
@@ -1328,6 +1774,10 @@ namespace StudioCharaEditor
                     if (trailingRows > 0)
                     {
                         GUILayout.Space(trailingRows * thumbRowHeight);
+                    }
+                    if (inSearching && searchState != null && !searchState.Complete)
+                    {
+                        GUILayout.Label(LC("Searching") + "...", GUI.skin.box);
                     }
                 }
                 else
@@ -1366,7 +1816,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(" ", GUILayout.Width(namew));
-            newV = GUILayout.Toggle(oldV, LC(name));
+            newV = DrawModernToggle(oldV, LC(name));
             GUILayout.FlexibleSpace();
             if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
             {
@@ -1403,12 +1853,12 @@ namespace StudioCharaEditor
             if (preciseMode)
             {
                 txtV = string.Format("{0:F5}", oldV);
-                inputw = 70;
+                inputw = GetValueFieldWidth(txtV, 76);
             }
             else
             {
                 txtV = string.Format("{0:F3}", oldV);
-                inputw = 60;
+                inputw = GetValueFieldWidth(txtV, 66);
             }
             string newTxtV = GUILayout.TextField(txtV, GUILayout.Width(inputw));
             if (!newTxtV.Equals(txtV))
@@ -1684,12 +2134,12 @@ namespace StudioCharaEditor
                 if (preciseMode)
                 {
                     txtV = string.Format("{0:F3}", oldV * 100.0);
-                    inputw = 60;
+                    inputw = GetValueFieldWidth(txtV, 68);
                 }
                 else
                 {
                     txtV = string.Format("{0:F0}", oldV * 100.0);
-                    inputw = 35;
+                    inputw = GetValueFieldWidth(txtV, 48);
                 }
                 string newTxtV = GUILayout.TextField(txtV, GUILayout.Width(inputw));
                 if (!newTxtV.Equals(txtV))
@@ -1718,7 +2168,7 @@ namespace StudioCharaEditor
                     sldMax = Math.Max(2, newV);
                     sldMin = Math.Min(-1, newV);
                 }
-                float sldV = GUILayout.HorizontalSlider(newV, sldMin, sldMax);
+                float sldV = DrawThinSlider(newV, sldMin, sldMax);
                 if (sldV != newV)
                     newV = sldV;
                 if (preciseMode)
@@ -1962,7 +2412,7 @@ namespace StudioCharaEditor
             }
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            bool newSavingCoord = GUILayout.Toggle(savingCoordinate, LC("Save as coordinate file"));
+            bool newSavingCoord = DrawModernToggle(savingCoordinate, LC("Save as coordinate file"));
             if (newSavingCoord != savingCoordinate)
             {
                 savingCoordinate = newSavingCoord;
@@ -1973,7 +2423,7 @@ namespace StudioCharaEditor
             GUILayout.EndHorizontal();
 
             // control buttons
-            float cbwidth = (fullw - 2 * 4) / 3;
+            float cbwidth = (fullw - ResizeGripReserve - 2 * 4) / 3;
             GUILayout.FlexibleSpace();
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(LC("Export PNG"), btnstyle, GUILayout.Width(cbwidth)))
@@ -2044,17 +2494,15 @@ namespace StudioCharaEditor
             {
                 guiMode = GuiModeType.MAIN;
             }
+            GUILayout.Space(ResizeGripReserve);
             GUILayout.EndHorizontal();
 
             // close btn
-            Rect cbRect = new Rect(windowRect.width - 16, 3, 13, 13);
-            Color oldColor = GUI.color;
-            GUI.color = Color.red;
-            if (GUI.Button(cbRect, ""))
+            Rect cbRect = new Rect(windowRect.width - 18, 3, 14, 14);
+            if (GUI.Button(cbRect, "", closeButtonStyle ?? GUI.skin.button))
             {
                 VisibleGUI = false;
             }
-            GUI.color = oldColor;
         }
 
         private void accessoryMultiAdjust(ChaControl chaCtrl, string name, CharaDetailInfo dMasterInfo, object value, bool delta = false)
@@ -2164,6 +2612,8 @@ namespace StudioCharaEditor
         {
             selectorListPool.Clear();
             selectorIndexPool.Clear();
+            selectorRenderRangePool.Clear();
+            selectorSearchPool.Clear();
         }
 
         private static int GetFilteredSelectorCount(List<CustomSelectInfo> infoList, bool inSearching, string searchText)
