@@ -14,14 +14,16 @@ namespace StudioCharaEditor
     [BepInPlugin(GUID, Name, Version)]
     [BepInDependency(KoikatuAPI.GUID, "1.43")]
     [BepInDependency("KCOX", "7.0")]
+    [BepInDependency("com.animal42069.studiobetterpenetration", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("mikke.pushUpAI", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.fairbair.hs2_boobsettings", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInProcess("StudioNEOV2")]
     [BepInProcess("StudioNEOV2.exe")]
     public class StudioCharaEditor : BaseUnityPlugin
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "2.3.2";
+        public const string Version = "2.3.3";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -53,6 +55,7 @@ namespace StudioCharaEditor
         {
             Instance = this;
             Logger = base.Logger;
+            Logger.LogInfo("Studio Chara Editor loaded.");
 
             // config
             KeyShowUI = Config.Bind("General", "StudioCharaEditor UI shortcut key", new KeyboardShortcut(KeyCode.D, KeyCode.LeftShift), "Toggles the main UI on and off.");

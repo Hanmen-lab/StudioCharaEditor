@@ -134,6 +134,7 @@
     <Compile Include="Core\CharaEditorController.cs" />
     <Compile Include="Core\CharaEditorMgr.cs" />
     <Compile Include="Core\PluginABMX.cs" />
+    <Compile Include="Core\PluginBetterPenetration.cs" />
     <Compile Include="Core\PluginBoobSetting.cs" />
     <Compile Include="Core\PluginMoreAccessories.cs" />
     <Compile Include="Core\PluginOverlay.cs" />

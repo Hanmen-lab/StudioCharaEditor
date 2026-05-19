@@ -313,7 +313,14 @@ namespace StudioCharaEditor
             {
                 chaCtrl.releaseCustomInputTexture = false;
                 chaCtrl.loadWithDefaultColorAndPtn = false;
-                chaCtrl.ChangeClothes(false);
+                if (PluginBetterPenetration.HasStudioPlugin())
+                {
+                    PluginBetterPenetration.LogSkippedInitialClothesRefresh();
+                }
+                else
+                {
+                    chaCtrl.ChangeClothes(false);
+                }
                 textureInited = true;
             }
             else if (!init && textureInited)
