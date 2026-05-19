@@ -94,6 +94,7 @@ namespace StudioCharaEditor
         private const float ThinSliderHeight = 20f;
         private const float ThinSliderTrackHeight = 2f;
         private const float ThinSliderThumbSize = 7f;
+        private const float TimelineButtonWidth = 22f;
         private const float ColorDragApplyInterval = 0.06f;
         private const float SelectorSearchDelay = 0.25f;
         private const int SelectorSearchBatchSize = 350;
@@ -295,6 +296,42 @@ namespace StudioCharaEditor
             }
 
             return value;
+        }
+
+        private void DrawTimelineButton(ChaControl chaCtrl, string name, CharaDetailInfo dInfo)
+        {
+            if (!PluginTimelineCompatibility.CanSelect(ociTarget, chaCtrl, dInfo))
+            {
+                return;
+            }
+
+            Color oldColor = GUI.color;
+            if (PluginTimelineCompatibility.IsSelected(ociTarget, dInfo))
+            {
+                GUI.color = Color.cyan;
+            }
+
+            string displayName = GetTimelineDisplayName(name, dInfo);
+            if (GUILayout.Button(new GUIContent("T", "Timeline"), GUILayout.Width(TimelineButtonWidth)))
+            {
+                PluginTimelineCompatibility.SelectInterpolable(ociTarget, chaCtrl, displayName, dInfo);
+            }
+
+            GUI.color = oldColor;
+        }
+
+        private string GetTimelineDisplayName(string name, CharaDetailInfo dInfo)
+        {
+            string detailKey = dInfo?.DetailDefine?.Key;
+            string category = string.IsNullOrEmpty(detailKey) ? string.Empty : GetDetailCategory2(detailKey);
+            string label = LC(name);
+            if (string.IsNullOrEmpty(category) || category == detailKey)
+            {
+                return label;
+            }
+
+            string categoryLabel = LC(category);
+            return categoryLabel == label ? label : categoryLabel + " " + label;
         }
 
         private int GetValueFieldWidth(string valueText, int minWidth)
@@ -1442,6 +1479,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
+            DrawTimelineButton(chaCtrl, name, dInfo);
             string txtV;
             int inputw;
             if (preciseMode)
@@ -1536,6 +1574,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
+            DrawTimelineButton(chaCtrl, name, dInfo);
             Texture2D colorTex = GetColorSwatchTexture(dInfo.DetailDefine.Key, oldC);
             if (GUILayout.Button(colorTex, colorSwatchButtonStyle ?? GUI.skin.button, GUILayout.Height(ColorSwatchHeight), GUILayout.Width(ColorSwatchWidth)))
             {
@@ -1816,6 +1855,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(" ", GUILayout.Width(namew));
+            DrawTimelineButton(chaCtrl, name, dInfo);
             newV = DrawModernToggle(oldV, LC(name));
             GUILayout.FlexibleSpace();
             if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
@@ -1842,6 +1882,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
+            DrawTimelineButton(chaCtrl, name, dInfo);
             // dec buttons
             if (GUILayout.RepeatButton("<<", GUILayout.Width(30)))
                 newV -= dim2;
@@ -1916,6 +1957,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
+            DrawTimelineButton(chaCtrl, name, dInfo);
             // int selector
             int num = vDefine.IntStatus.Length;
             if (true)

@@ -61,6 +61,7 @@ namespace StudioCharaEditor
             gui = new GameObject("GUI").AddComponent<CharaEditorUI>();
             gui.transform.parent = base.transform;
             gui.VisibleGUI = false;
+            PluginTimelineCompatibility.PopulateTimeline();
             //Console.WriteLine("StudioCharaEditor CharaEditorMgr Started.");
 
             // check extra plugins

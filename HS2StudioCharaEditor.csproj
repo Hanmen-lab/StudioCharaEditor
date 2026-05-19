@@ -139,6 +139,7 @@
     <Compile Include="Core\PluginHooahComponents.cs" />
     <Compile Include="Core\PluginMoreAccessories.cs" />
     <Compile Include="Core\PluginOverlay.cs" />
+    <Compile Include="Core\PluginTimelineCompatibility.cs" />
     <Compile Include="GUI\CharaEditorTheme.cs" />
     <Compile Include="GUI\CharaEditorUI.cs" />
     <Compile Include="StudioCharaEditor.cs" />

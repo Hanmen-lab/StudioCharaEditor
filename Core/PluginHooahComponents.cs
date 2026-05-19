@@ -10,7 +10,8 @@ namespace StudioCharaEditor
 {
     internal static class PluginHooahComponents
     {
-        private const string DickControllerTypeName = "HooahComponents.DickController";
+        private const string DickControllerTypeName = "DickController";
+        private const string NamespacedDickControllerTypeName = "HooahComponents.DickController";
         private const string BetterPenetrationToolsTypeName = "Core_BetterPenetration.Tools";
         private const int RebindThrottleFrames = 2;
 
@@ -20,6 +21,7 @@ namespace StudioCharaEditor
         private static Type dickControllerType;
         private static FieldInfo dickControllerInstancesField;
         private static FieldInfo dickChainsField;
+        private static MethodInfo collideWithCharacterMethod;
         private static readonly HashSet<ChaControl> scheduledCharacters = new HashSet<ChaControl>();
         private static readonly Dictionary<ChaControl, int> lastRebindFrames = new Dictionary<ChaControl, int>();
 
@@ -106,7 +108,25 @@ namespace StudioCharaEditor
                 return;
             }
 
-            List<DynamicBoneColliderBase> colliders = GetDickColliders();
+            List<object> controllers = GetDickControllers();
+            if (controllers.Count == 0)
+            {
+                return;
+            }
+
+            List<DynamicBoneColliderBase> colliders = GetDickColliders(controllers);
+            RemoveDickColliders(chaCtrl, colliders);
+
+            for (int i = 0; i < controllers.Count; i++)
+            {
+                InvokeCollideWithCharacter(controllers[i], chaCtrl);
+            }
+
+            DedupeDickColliders(chaCtrl, colliders);
+        }
+
+        private static void RemoveDickColliders(ChaControl chaCtrl, List<DynamicBoneColliderBase> colliders)
+        {
             if (colliders.Count == 0)
             {
                 return;
@@ -116,31 +136,66 @@ namespace StudioCharaEditor
             for (int boneIndex = 0; boneIndex < dynamicBones.Length; boneIndex++)
             {
                 DynamicBone bone = dynamicBones[boneIndex];
-                if (bone == null)
+                if (bone?.m_Colliders == null)
                 {
                     continue;
                 }
 
-                if (bone.m_Colliders == null)
-                {
-                    bone.m_Colliders = new List<DynamicBoneColliderBase>();
-                }
-
                 for (int i = bone.m_Colliders.Count - 1; i >= 0; i--)
                 {
-                    if (bone.m_Colliders[i] == null)
+                    if (bone.m_Colliders[i] == null || colliders.Contains(bone.m_Colliders[i]))
                     {
                         bone.m_Colliders.RemoveAt(i);
                     }
                 }
+            }
+        }
 
-                for (int colliderIndex = 0; colliderIndex < colliders.Count; colliderIndex++)
+        private static void DedupeDickColliders(ChaControl chaCtrl, List<DynamicBoneColliderBase> colliders)
+        {
+            if (colliders.Count == 0)
+            {
+                return;
+            }
+
+            DynamicBone[] dynamicBones = chaCtrl.gameObject.GetComponentsInChildren<DynamicBone>(true);
+            for (int boneIndex = 0; boneIndex < dynamicBones.Length; boneIndex++)
+            {
+                DynamicBone bone = dynamicBones[boneIndex];
+                if (bone?.m_Colliders == null)
                 {
-                    DynamicBoneColliderBase collider = colliders[colliderIndex];
-                    if (collider != null && !bone.m_Colliders.Contains(collider))
+                    continue;
+                }
+
+                HashSet<DynamicBoneColliderBase> seenDickColliders = new HashSet<DynamicBoneColliderBase>();
+                for (int i = bone.m_Colliders.Count - 1; i >= 0; i--)
+                {
+                    DynamicBoneColliderBase collider = bone.m_Colliders[i];
+                    if (collider == null)
                     {
-                        bone.m_Colliders.Add(collider);
+                        bone.m_Colliders.RemoveAt(i);
+                        continue;
                     }
+
+                    if (colliders.Contains(collider) && !seenDickColliders.Add(collider))
+                    {
+                        bone.m_Colliders.RemoveAt(i);
+                    }
+                }
+            }
+        }
+
+        private static void InvokeCollideWithCharacter(object controller, ChaControl chaCtrl)
+        {
+            try
+            {
+                collideWithCharacterMethod?.Invoke(controller, new object[] { chaCtrl });
+            }
+            catch (Exception ex)
+            {
+                if (StudioCharaEditor.VerboseMessage?.Value == true)
+                {
+                    StudioCharaEditor.Logger?.LogWarning($"Failed to rebind Hooah scripted dick colliders: {ex.Message}");
                 }
             }
         }
@@ -158,16 +213,33 @@ namespace StudioCharaEditor
             RebindDickColliders(chaCtrl);
         }
 
-        private static List<DynamicBoneColliderBase> GetDickColliders()
+        private static List<object> GetDickControllers()
         {
-            List<DynamicBoneColliderBase> colliders = new List<DynamicBoneColliderBase>();
+            List<object> controllers = new List<object>();
             if (!HasDickControllers() ||
                 !(dickControllerInstancesField.GetValue(null) is IEnumerable instances))
             {
-                return colliders;
+                return controllers;
             }
 
             foreach (object instance in instances)
+            {
+                if (!(instance is Component component) || component == null)
+                {
+                    continue;
+                }
+
+                controllers.Add(instance);
+            }
+
+            return controllers;
+        }
+
+        private static List<DynamicBoneColliderBase> GetDickColliders(List<object> controllers)
+        {
+            List<DynamicBoneColliderBase> colliders = new List<DynamicBoneColliderBase>();
+
+            foreach (object instance in controllers)
             {
                 if (!(instance is Component component) || component == null)
                 {
@@ -199,7 +271,7 @@ namespace StudioCharaEditor
         {
             if (dickControllerType == null)
             {
-                dickControllerType = FindType(DickControllerTypeName);
+                dickControllerType = FindType(DickControllerTypeName) ?? FindType(NamespacedDickControllerTypeName);
             }
             if (dickControllerType == null)
             {
@@ -222,7 +294,17 @@ namespace StudioCharaEditor
                 dickChainsField = FindInstanceField(dickControllerType, "dickChains");
             }
 
-            return dickChainsField != null;
+            if (collideWithCharacterMethod == null)
+            {
+                collideWithCharacterMethod = dickControllerType.GetMethod(
+                    "CollideWithCharacter",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                    null,
+                    new[] { typeof(ChaControl) },
+                    null);
+            }
+
+            return dickChainsField != null && collideWithCharacterMethod != null;
         }
 
         private static FieldInfo FindInstanceField(Type type, string fieldName)
