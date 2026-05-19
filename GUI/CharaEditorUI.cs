@@ -50,6 +50,9 @@ namespace StudioCharaEditor
         private Dictionary<string, bool> expandPool = new Dictionary<string, bool>();
         private Dictionary<string, Dictionary<string, Texture2D>> thumbPool = new Dictionary<string, Dictionary<string, Texture2D>>();
         private Dictionary<string, string> searchWordPool = new Dictionary<string, string>();
+        private readonly Dictionary<string, List<CustomSelectInfo>> selectorListPool = new Dictionary<string, List<CustomSelectInfo>>();
+        private readonly Dictionary<string, Dictionary<int, int>> selectorIndexPool = new Dictionary<string, Dictionary<int, int>>();
+        private readonly Dictionary<string, ColorSwatch> colorSwatchPool = new Dictionary<string, ColorSwatch>();
 
         // save
         private OCIChar savingChara;
@@ -62,12 +65,26 @@ namespace StudioCharaEditor
         // GUI
         private GUIStyle largeLabel;
         private GUIStyle btnstyle;
+        private GUIStyle windowStyle;
+        private GUIStyle categoryButtonStyle;
+        private GUIStyle texTextStyle;
+        private global::Studio.CameraControl.NoCtrlFunc cameraNoCtrlCondition;
         private Vector2 leftScroll = Vector2.zero;
         private Vector2 rightScroll = Vector2.zero;
         private int namew = 100;
         private float thumbSize = 100;
         private float thumbSizeSmall = 70;
         private float thumbBtnHeight = 40;
+        private const float ThumbListRowGap = 4f;
+        private const int ColorSwatchWidth = 74;
+        private const int ColorSwatchHeight = 20;
+        private static readonly string[] HairSetKeys =
+        {
+            "Hair#BackHair",
+            "Hair#FrontHair",
+            "Hair#SideHair",
+            "Hair#ExtensionHair"
+        };
 
         // work
         public static Queue<Action> ToDoQueue = new Queue<Action>();
@@ -78,6 +95,13 @@ namespace StudioCharaEditor
             SAVE,
         };
         private GuiModeType guiMode = GuiModeType.MAIN;
+
+        private class ColorSwatch
+        {
+            public Texture2D Texture;
+            public Color[] Pixels;
+            public int ColorKey = int.MinValue;
+        }
 
         // Localize
         public Dictionary<string, string> curLocalizationDict;
@@ -96,6 +120,7 @@ namespace StudioCharaEditor
             catelogIndex1 = 0;
             catelogIndex2 = new int[] { 1, 1, 2, 0, 0 };
             detailPageSelect = SelectMode.Normal;
+            ClearSelectorCache();
         }
 
         private void Start()
@@ -104,8 +129,33 @@ namespace StudioCharaEditor
             largeLabel.fontSize = 16;
             btnstyle = new GUIStyle("button");
             btnstyle.fontSize = 16;
+            categoryButtonStyle = new GUIStyle("button");
+            texTextStyle = new GUIStyle("box")
+            {
+                alignment = TextAnchor.MiddleCenter,
+                richText = true
+            };
+            cameraNoCtrlCondition = () => mouseInWindow && VisibleGUI;
 
             //Console.WriteLine("StudioCharaEditor CharaEditorUI started.");
+        }
+
+        private void OnDestroy()
+        {
+            foreach (ColorSwatch swatch in colorSwatchPool.Values)
+            {
+                if (swatch.Texture != null)
+                {
+                    Destroy(swatch.Texture);
+                }
+            }
+            colorSwatchPool.Clear();
+
+            if (savingTexture != null)
+            {
+                Destroy(savingTexture);
+                savingTexture = null;
+            }
         }
 
         private void OnGUI()
@@ -114,13 +164,16 @@ namespace StudioCharaEditor
             {
                 try
                 {
-                    GUIStyle guistyle = new GUIStyle(GUI.skin.window);
-                    windowRect = GUI.Window(windowID, windowRect, new GUI.WindowFunction(FuncWindowGUI), windowTitle, guistyle);
+                    if (windowStyle == null)
+                    {
+                        windowStyle = new GUIStyle(GUI.skin.window);
+                    }
+                    windowRect = GUI.Window(windowID, windowRect, new GUI.WindowFunction(FuncWindowGUI), windowTitle, windowStyle);
 
                     mouseInWindow = windowRect.Contains(Event.current.mousePosition);
                     if (mouseInWindow)
                     {
-                        Studio.Studio.Instance.cameraCtrl.noCtrlCondition = (() => mouseInWindow && VisibleGUI);
+                        Studio.Studio.Instance.cameraCtrl.noCtrlCondition = cameraNoCtrlCondition;
                         Input.ResetInputAxes();
                     }
                 }
@@ -225,6 +278,7 @@ namespace StudioCharaEditor
         {
             lastSelectedTreeNode = newSel;
             ociTarget = GetOCICharFromNode(newSel);
+            ClearSelectorCache();
             //Console.WriteLine("Select change to {0}", ociTarget);
         }
 
@@ -262,7 +316,6 @@ namespace StudioCharaEditor
             float fullh = windowRect.height - 20;
             float leftw = 150;
             float rightw = fullw - 8 - leftw - 5;
-            GUIStyle cat1btnstyle = new GUIStyle("button");
 
             CharaEditorController cec = CharaEditorMgr.Instance.GetEditorController(ociTarget);
             if (ociTarget == null || cec == null)
@@ -363,19 +416,19 @@ namespace StudioCharaEditor
                         if (catelogIndex1 == 3)
                         {
                             title = cec.GetClothDispName(title);
-                            cat1btnstyle.alignment = TextAnchor.MiddleCenter;
+                            categoryButtonStyle.alignment = TextAnchor.MiddleCenter;
                         }
                         else if (catelogIndex1 == 4)
                         {
                             if (accSlotMultiSelection.Count == 0) accSlotMultiSelection.Add(title);
                             title = cec.GetAccessoryInfoByKey(title)?.AccName;
-                            cat1btnstyle.alignment = TextAnchor.MiddleLeft;
+                            categoryButtonStyle.alignment = TextAnchor.MiddleLeft;
                         }
                         else
                         {
-                            cat1btnstyle.alignment = TextAnchor.MiddleCenter;
+                            categoryButtonStyle.alignment = TextAnchor.MiddleCenter;
                         }
-                        if (GUILayout.Button(LC(title), cat1btnstyle))
+                        if (GUILayout.Button(LC(title), categoryButtonStyle))
                         {
                             catelogIndex2[catelogIndex1] = c2;
                             detailPageSelect = SelectMode.Normal;
@@ -386,7 +439,11 @@ namespace StudioCharaEditor
                                 if (Event.current.shift)
                                 {
                                     // add from last selection
-                                    int lastC2 = category2List.ToList().IndexOf(accSlotMultiSelection[accSlotMultiSelection.Count - 1]);
+                                    int lastC2 = Array.IndexOf(category2List, accSlotMultiSelection[accSlotMultiSelection.Count - 1]);
+                                    if (lastC2 < 0)
+                                    {
+                                        lastC2 = c2;
+                                    }
                                     if (lastC2 != c2)
                                     {
                                         int sFrom = c2 < lastC2 ? c2 : lastC2;
@@ -436,6 +493,7 @@ namespace StudioCharaEditor
                     {
                         cec.accSortByParent = accSortMode;
                         cec.RefreshAccessoriesList();
+                        ClearSelectorCache();
                     }
                     GUILayout.EndHorizontal();
                     // More Accessories add slot command
@@ -446,11 +504,13 @@ namespace StudioCharaEditor
                         {
                             PluginMoreAccessories.AddOneAccessorySlot(cec.ociTarget.charInfo);
                             cec.RefreshAccessoriesList();
+                            ClearSelectorCache();
                         }
                         if (GUILayout.Button(LC("+10 Slots")))
                         {
                             PluginMoreAccessories.AddTenAccessorySlots(cec.ociTarget.charInfo);
                             cec.RefreshAccessoriesList();
+                            ClearSelectorCache();
                         }
                         GUILayout.EndHorizontal();
                     }
@@ -649,6 +709,7 @@ namespace StudioCharaEditor
                                     PluginMoreAccessories.AddTenAccessorySlots(cec.ociTarget.charInfo);
                                 }
                                 cec.RefreshAccessoriesList();
+                                ClearSelectorCache();
                             }
 
                             // copy slots
@@ -685,7 +746,7 @@ namespace StudioCharaEditor
                         {
                             // setting or selecting mode
                             string dkey = dInfo.DetailDefine.Key;
-                            string dname = dkey.Split(CharaEditorController.KEY_SEP_CHAR)[2];
+                            string dname = GetDetailName(dkey);
                             if (detailPageSelect == SelectMode.Normal)
                             {
                                 // Setting mode
@@ -890,12 +951,13 @@ namespace StudioCharaEditor
                     savingFilename = string.Format("CharaEditor_{0:yyyy-MM-dd-HH-mm-ss}_{1}_{2}.png", DateTime.Now, savingChaFile.parameter.sex == 0 ? "male" : "female", savingChaFile.parameter.fullname);
                     if (savingChaFile.pngData != null)
                     {
-                        savingTexture = new Texture2D(2, 2);
-                        ImageConversion.LoadImage(savingTexture, savingChaFile.pngData);
+                        Texture2D previewTexture = new Texture2D(2, 2);
+                        ImageConversion.LoadImage(previewTexture, savingChaFile.pngData);
+                        SetSavingTexture(previewTexture);
                     }
                     else
                     {
-                        savingTexture = null;
+                        SetSavingTexture(null);
                     }
                     savingCoordinate = false;
                     coordinateName = string.Format("{0}_cood", savingChaFile.parameter.fullname);
@@ -1011,15 +1073,6 @@ namespace StudioCharaEditor
             {
                 return string.Format("R:{0:F0} G:{1:F0} B:{2:F0} A:{3:F0}", color.r * 255, color.g * 255, color.b * 255, color.a * 100);
             }
-            Color[] getColors(int size, Color fillColor)
-            {
-                List<Color> cList = new List<Color>();
-                for (int i = 0; i < size; i++)
-                {
-                    cList.Add(fillColor);
-                }
-                return cList.ToArray();
-            }
             void onChangeColor(Color color)
             {
                 if (color != oldC)
@@ -1032,11 +1085,8 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
-            int colorw = 74;
-            Texture2D colorTex = new Texture2D(colorw, 20);
-            colorTex.SetPixels(getColors(colorw * 20, oldC));
-            colorTex.Apply();
-            if (GUILayout.Button(colorTex, GUILayout.Height(20), GUILayout.Width(colorw)))
+            Texture2D colorTex = GetColorSwatchTexture(dInfo.DetailDefine.Key, oldC);
+            if (GUILayout.Button(colorTex, GUILayout.Height(ColorSwatchHeight), GUILayout.Width(ColorSwatchWidth)))
             {
                 Studio.Studio studio = Studio.Studio.Instance;
                 studio.colorPalette.Setup(LC(name), oldC, new Action<Color>(onChangeColor), true);
@@ -1058,6 +1108,7 @@ namespace StudioCharaEditor
             float rightw = fullw - 8 - leftw - 5;
             float thumbBtnWidth = rightw - namew - thumbSize - 60;
             float thumbVSpace = (thumbSize - thumbBtnHeight) / 2;
+            float thumbRowHeight = thumbSize + ThumbListRowGap;
             float thumbListMinH = thumbSize * 2 + 20;// 130;
             float thumbListMaxH = fullh * 0.7f;// 350;
             int thumbShowBefore = 1;
@@ -1071,14 +1122,24 @@ namespace StudioCharaEditor
             int oldId = (int)dInfo.DetailDefine.Get(chaCtrl);
             string oldName = "!!Unknown!!";
             int oldIndex = -1;
-            List<CustomSelectInfo> infoLst = dInfo.DetailDefine.SelectorList(chaCtrl);
-            for (int i = 0; i < infoLst.Count; i++)
+            string selectorKey = dInfo.DetailDefine.Key;
+            List<CustomSelectInfo> infoLst = GetSelectorList(chaCtrl, dInfo);
+            Dictionary<int, int> indexById;
+            if (selectorIndexPool.TryGetValue(selectorKey, out indexById) && indexById.TryGetValue(oldId, out oldIndex))
             {
-                if (infoLst[i].id == oldId)
+                CustomSelectInfo selectedInfo = infoLst[oldIndex];
+                oldName = selectedInfo.name;
+            }
+            else
+            {
+                for (int i = 0; i < infoLst.Count; i++)
                 {
-                    oldName = infoLst[i].name;
-                    oldIndex = i;
-                    break;
+                    if (infoLst[i].id == oldId)
+                    {
+                        oldName = infoLst[i].name;
+                        oldIndex = i;
+                        break;
+                    }
                 }
             }
 
@@ -1100,6 +1161,7 @@ namespace StudioCharaEditor
                 if (id != oldId)
                 {
                     dInfo.DetailDefine.Set(chaCtrl, id);
+                    ClearSelectorCache();
                     if (dInfo.DetailDefine.Upd != null && !LaterUpdate) dInfo.DetailDefine.Upd(chaCtrl);
                 }
             }
@@ -1121,6 +1183,23 @@ namespace StudioCharaEditor
                 }
             }
 
+            void DrawThumbSelectorRow(CustomSelectInfo info, int selectedId, float rowThumbVSpace, float rowThumbBtnWidth, Func<CustomSelectInfo, Texture2D> loadThumbTex, Action<int> changeId)
+            {
+                Color color = GUI.color;
+                Texture2D tex = loadThumbTex(info);
+                GUILayout.BeginHorizontal();
+                GUILayout.Box(tex, GUILayout.Width(thumbSize), GUILayout.Height(thumbSize));
+                GUILayout.BeginVertical();
+                GUILayout.Space(rowThumbVSpace);
+                if (info.id == selectedId)
+                    GUI.color = Color.green;
+                if (GUILayout.Button(string.Format("#{0}:\n{1}", info.id, info.name), GUILayout.Width(rowThumbBtnWidth), GUILayout.Height(thumbBtnHeight)))
+                    changeId(info.id);
+                GUILayout.EndVertical();
+                GUILayout.EndHorizontal();
+                GUI.color = color;
+            }
+
             // title line
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
@@ -1131,10 +1210,10 @@ namespace StudioCharaEditor
                 GUILayout.Label(string.Format("#{0}\n{1}", oldId, oldName));
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("+", GUILayout.Width(25)))
-                {
-                    expandPool[name] = true;
-                    scrollPool[name] = new Vector2(0, oldIndex * (thumbSize + 4) + 4);
-                }
+                    {
+                        expandPool[name] = true;
+                        scrollPool[name] = new Vector2(0, Math.Max(0, oldIndex) * thumbRowHeight + ThumbListRowGap);
+                    }
                 if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
                     onChangeId((int)dInfo.RevertValue);
             }
@@ -1164,7 +1243,7 @@ namespace StudioCharaEditor
                     {
                         expandPool[name] = true;
                         if (thumbList)
-                            scrollPool[name] = new Vector2(0, oldIndex * (thumbSize + 3) + 4);
+                            scrollPool[name] = new Vector2(0, Math.Max(0, oldIndex) * thumbRowHeight + ThumbListRowGap);
                         else
                             scrollPool[name] = new Vector2(0, oldIndex * (20 + 4) + 4);
                     }
@@ -1194,47 +1273,76 @@ namespace StudioCharaEditor
                 }
 
                 // draw drop list
+                string searchText = inSearching ? searchWordPool[name] : null;
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(" ", GUILayout.Width(namew));
                 scrollPool[name] = GUILayout.BeginScrollView(scrollPool[name], GUI.skin.box, GUILayout.MinHeight(thumbListMinH), GUILayout.MaxHeight(thumbListMaxH));
-                int fi = 0;
-                for (int i = 0; i < infoLst.Count; i++)
+                if (thumbList)
                 {
-                    CustomSelectInfo info = infoLst[i];
-                    Color color = GUI.color;
-                    if (thumbList)
+                    int filteredCount = GetFilteredSelectorCount(infoLst, inSearching, searchText);
+                    int firstVisible = Math.Max(0, (int)(scrollPool[name].y / thumbRowHeight) - thumbShowBefore);
+                    int lastVisible = Math.Min(filteredCount - 1, firstVisible + thumbShowBefore + thumbShowAfter + 1);
+
+                    if (firstVisible > 0)
                     {
-                        // search filter
-                        if (inSearching && !info.name.ToLower().Contains(searchWordPool[name].ToLower()))
+                        GUILayout.Space(firstVisible * thumbRowHeight);
+                    }
+
+                    int lastDrawn = firstVisible - 1;
+                    if (!inSearching)
+                    {
+                        for (int i = firstVisible; i <= lastVisible; i++)
                         {
-                            continue;
+                            DrawThumbSelectorRow(infoLst[i], oldId, thumbVSpace, thumbBtnWidth, getThumbTex, onChangeId);
+                            lastDrawn = i;
                         }
-                        // load thumb tex
-                        int curDispIndex = (int)(scrollPool[name].y / (thumbSize + 4));
-                        bool needThumb = fi >= curDispIndex - thumbShowBefore && fi <= curDispIndex + thumbShowAfter;
-                        fi++;
-                        Texture2D tex = needThumb ? getThumbTex(info) : Texture2D.blackTexture;
-                        // show thumb and button
-                        GUILayout.BeginHorizontal();
-                        GUILayout.Box(tex, GUILayout.Width(thumbSize), GUILayout.Height(thumbSize));
-                        GUILayout.BeginVertical();
-                        GUILayout.Space(thumbVSpace);
-                        if (info.id == oldId)
-                            GUI.color = Color.green;
-                        if (GUILayout.Button(string.Format("#{0}:\n{1}", info.id, info.name), GUILayout.Width(thumbBtnWidth), GUILayout.Height(thumbBtnHeight)))
-                            onChangeId(info.id);
-                        GUILayout.EndVertical();
-                        GUILayout.EndHorizontal();
                     }
                     else
                     {
+                        int filteredIndex = 0;
+                        for (int i = 0; i < infoLst.Count; i++)
+                        {
+                            CustomSelectInfo info = infoLst[i];
+                            if (!SelectorMatchesSearch(info, true, searchText))
+                            {
+                                continue;
+                            }
+
+                            if (filteredIndex < firstVisible)
+                            {
+                                filteredIndex++;
+                                continue;
+                            }
+                            if (filteredIndex > lastVisible)
+                            {
+                                break;
+                            }
+
+                            DrawThumbSelectorRow(info, oldId, thumbVSpace, thumbBtnWidth, getThumbTex, onChangeId);
+                            lastDrawn = filteredIndex;
+                            filteredIndex++;
+                        }
+                    }
+
+                    int trailingRows = filteredCount - lastDrawn - 1;
+                    if (trailingRows > 0)
+                    {
+                        GUILayout.Space(trailingRows * thumbRowHeight);
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < infoLst.Count; i++)
+                    {
+                        CustomSelectInfo info = infoLst[i];
+                        Color color = GUI.color;
                         // button only
                         if (info.id == oldId)
                             GUI.color = Color.green;
                         if (GUILayout.Button(string.Format("#{0}: {1}", info.id, info.name)))
                             onChangeId(info.id);
+                        GUI.color = color;
                     }
-                    GUI.color = color;
                 }
                 GUILayout.EndScrollView();
                 GUILayout.EndHorizontal();
@@ -1405,8 +1513,7 @@ namespace StudioCharaEditor
         {
             // get hair PartsNo
             //Console.WriteLine("\nStart render hair bundle, setKey = {0}", setKey);
-            List<string> setKeyToPartsNo = new List<string>() { "Hair#BackHair", "Hair#FrontHair", "Hair#SideHair", "Hair#ExtensionHair" };
-            HairBundleDetailSet.PartsNo = setKeyToPartsNo.IndexOf(setKey);
+            HairBundleDetailSet.PartsNo = Array.IndexOf(HairSetKeys, setKey);
             if (HairBundleDetailSet.PartsNo == -1)
             {
                 return;
@@ -1675,10 +1782,6 @@ namespace StudioCharaEditor
         private void guiRenderSkinOverlay(ChaControl chaCtrl, string name, CharaDetailInfo dInfo)
         {
             float OverlayThumbSize = 124;
-            GUIStyle texTextStyle = new GUIStyle("box")
-            {
-                alignment = TextAnchor.MiddleCenter
-            };
 
             // current part texture
             SkinOverlayDetailDefine overlayDefine = (SkinOverlayDetailDefine)dInfo.DetailDefine;
@@ -1707,10 +1810,6 @@ namespace StudioCharaEditor
         private void guiRenderClothOverlay(ChaControl chaCtrl, string name, CharaDetailInfo dInfo)
         {
             float OverlayThumbSize = 124;
-            GUIStyle texTextStyle = new GUIStyle("box")
-            {
-                alignment = TextAnchor.MiddleCenter
-            };
 
             // current part texture
             ClothOverlayDetailDefine overlayDefine = (ClothOverlayDetailDefine)dInfo.DetailDefine;
@@ -1758,9 +1857,7 @@ namespace StudioCharaEditor
             }
             else
             {
-                GUIStyle boxStyle = new GUIStyle("box");
-                boxStyle.alignment = TextAnchor.MiddleCenter;
-                GUILayout.Box(redText(LC("No Photo")), boxStyle, GUILayout.Width(thumbW), GUILayout.Height(thumbH));
+                GUILayout.Box(redText(LC("No Photo")), texTextStyle, GUILayout.Width(thumbW), GUILayout.Height(thumbH));
             }
 
             GUILayout.BeginVertical();
@@ -1851,9 +1948,11 @@ namespace StudioCharaEditor
                 capTex.LoadImage(capBuf);
                 Color[] capPixels = capTex.GetPixels((1280 - savW) / 2, (720 - savH) / 2, savW, savH, 0);
 
-                savingTexture = new Texture2D(savW, savH);
-                savingTexture.SetPixels(capPixels);
-                savingTexture.Apply();
+                Texture2D newSavingTexture = new Texture2D(savW, savH);
+                newSavingTexture.SetPixels(capPixels);
+                newSavingTexture.Apply();
+                SetSavingTexture(newSavingTexture);
+                Destroy(capTex);
 
                 // shink size
                 if (!StudioCharaEditor.DoubleThumbnailSize.Value)
@@ -1963,7 +2062,7 @@ namespace StudioCharaEditor
             if (catelogIndex1 != 4) return; // only for accessories
             if (accSlotMultiSelection.Count <= 1) return;   // only for multi selection
 
-            string masterAccKey = dMasterInfo.DetailDefine.Key.Split(CharaEditorController.KEY_SEP_CHAR)[1];
+            string masterAccKey = GetDetailCategory2(dMasterInfo.DetailDefine.Key);
             //Console.WriteLine($"Adjust for multi accessories: from={masterAccKey}, to={accSlotMultiSelection.Count - 1}, name={name}, value={value}, delta={delta}");
             CharaEditorController cec = CharaEditorMgr.Instance.GetEditorController(ociTarget);
             foreach (string accKey in accSlotMultiSelection)
@@ -2006,6 +2105,147 @@ namespace StudioCharaEditor
                     Console.WriteLine("Unknown/Unsupported call input for multi accessory adjustment: " + accKey + "#" + name);
                 }
             }
+        }
+
+        private Texture2D GetColorSwatchTexture(string swatchKey, Color color)
+        {
+            Color32 color32 = color;
+            int key = unchecked((color32.r << 24) | (color32.g << 16) | (color32.b << 8) | color32.a);
+            ColorSwatch swatch;
+            if (!colorSwatchPool.TryGetValue(swatchKey, out swatch) || swatch == null || swatch.Texture == null)
+            {
+                swatch = new ColorSwatch
+                {
+                    Texture = new Texture2D(ColorSwatchWidth, ColorSwatchHeight, TextureFormat.ARGB32, false),
+                    Pixels = new Color[ColorSwatchWidth * ColorSwatchHeight]
+                };
+                swatch.Texture.wrapMode = TextureWrapMode.Clamp;
+                swatch.Texture.filterMode = FilterMode.Point;
+                colorSwatchPool[swatchKey] = swatch;
+            }
+
+            if (swatch.ColorKey != key)
+            {
+                for (int i = 0; i < swatch.Pixels.Length; i++)
+                {
+                    swatch.Pixels[i] = color;
+                }
+                swatch.Texture.SetPixels(swatch.Pixels);
+                swatch.Texture.Apply(false, false);
+                swatch.ColorKey = key;
+            }
+
+            return swatch.Texture;
+        }
+
+        private List<CustomSelectInfo> GetSelectorList(ChaControl chaCtrl, CharaDetailInfo dInfo)
+        {
+            string selectorKey = dInfo.DetailDefine.Key;
+            List<CustomSelectInfo> infoList;
+            if (!selectorListPool.TryGetValue(selectorKey, out infoList) || infoList == null)
+            {
+                infoList = dInfo.DetailDefine.SelectorList(chaCtrl) ?? new List<CustomSelectInfo>();
+                selectorListPool[selectorKey] = infoList;
+
+                Dictionary<int, int> indexById = new Dictionary<int, int>();
+                for (int i = 0; i < infoList.Count; i++)
+                {
+                    if (!indexById.ContainsKey(infoList[i].id))
+                    {
+                        indexById.Add(infoList[i].id, i);
+                    }
+                }
+                selectorIndexPool[selectorKey] = indexById;
+            }
+            return infoList;
+        }
+
+        private void ClearSelectorCache()
+        {
+            selectorListPool.Clear();
+            selectorIndexPool.Clear();
+        }
+
+        private static int GetFilteredSelectorCount(List<CustomSelectInfo> infoList, bool inSearching, string searchText)
+        {
+            if (!inSearching)
+            {
+                return infoList.Count;
+            }
+
+            int count = 0;
+            for (int i = 0; i < infoList.Count; i++)
+            {
+                if (SelectorMatchesSearch(infoList[i], true, searchText))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private static bool SelectorMatchesSearch(CustomSelectInfo info, bool inSearching, string searchText)
+        {
+            if (!inSearching)
+            {
+                return true;
+            }
+            if (string.IsNullOrEmpty(info.name))
+            {
+                return false;
+            }
+            return info.name.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void SetSavingTexture(Texture2D texture)
+        {
+            if (savingTexture != null && savingTexture != texture)
+            {
+                Destroy(savingTexture);
+            }
+            savingTexture = texture;
+        }
+
+        private static string GetDetailName(string detailKey)
+        {
+            char keySeparator = CharaEditorController.KEY_SEP_CHAR[0];
+            int firstSep = detailKey.IndexOf(keySeparator);
+            if (firstSep < 0)
+            {
+                return detailKey;
+            }
+
+            int secondSep = detailKey.IndexOf(keySeparator, firstSep + 1);
+            if (secondSep < 0 || secondSep + 1 >= detailKey.Length)
+            {
+                return detailKey;
+            }
+
+            int thirdSep = detailKey.IndexOf(keySeparator, secondSep + 1);
+            if (thirdSep < 0)
+            {
+                return detailKey.Substring(secondSep + 1);
+            }
+
+            return detailKey.Substring(secondSep + 1, thirdSep - secondSep - 1);
+        }
+
+        private static string GetDetailCategory2(string detailKey)
+        {
+            char keySeparator = CharaEditorController.KEY_SEP_CHAR[0];
+            int firstSep = detailKey.IndexOf(keySeparator);
+            if (firstSep < 0 || firstSep + 1 >= detailKey.Length)
+            {
+                return detailKey;
+            }
+
+            int secondSep = detailKey.IndexOf(keySeparator, firstSep + 1);
+            if (secondSep < 0)
+            {
+                return detailKey.Substring(firstSep + 1);
+            }
+
+            return detailKey.Substring(firstSep + 1, secondSep - firstSep - 1);
         }
 
 

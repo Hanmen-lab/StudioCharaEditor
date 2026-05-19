@@ -19,6 +19,8 @@ namespace StudioCharaEditor
         public CharaEditorUI gui;
         public Dictionary<OCIChar, CharaEditorController> charaEditorCtrlDict = new Dictionary<OCIChar, CharaEditorController>();
         public Dictionary<string, Dictionary<string, string>> charaEditorLocalizeDict = new Dictionary<string, Dictionary<string, string>>();
+        private const int HouseKeepingFrameInterval = 30;
+        private int housekeepingCooldown;
 
         public static CharaEditorMgr Instance { get; private set; }
 
@@ -71,27 +73,41 @@ namespace StudioCharaEditor
 
         public void HouseKeeping(bool isVisible)
         {
-            // release deleted controller
-            if (isVisible)
+            if (!isVisible)
             {
-                foreach (OCIChar ociChar in charaEditorCtrlDict.Keys)
+                housekeepingCooldown = 0;
+                return;
+            }
+
+            if (housekeepingCooldown > 0)
+            {
+                housekeepingCooldown--;
+                return;
+            }
+            housekeepingCooldown = HouseKeepingFrameInterval;
+
+            // release deleted controller
+            OCIChar deletedChar = null;
+            foreach (OCIChar ociChar in charaEditorCtrlDict.Keys)
+            {
+                if (ociChar.charInfo == null)
                 {
-                    if (ociChar.charInfo == null)
-                    {
-                        Console.WriteLine("Remove controller for deleted chara");
-                        charaEditorCtrlDict.Remove(ociChar);
-                        return;
-                    }
+                    deletedChar = ociChar;
+                    break;
                 }
             }
 
-            // housekeeping for controller
-            if (isVisible)
+            if (deletedChar != null)
             {
-                foreach (var ctrl in charaEditorCtrlDict.Values)
-                {
-                    ctrl.RefreshAccessoriesListIfExpired();
-                }
+                Console.WriteLine("Remove controller for deleted chara");
+                charaEditorCtrlDict.Remove(deletedChar);
+                return;
+            }
+
+            // housekeeping for controller
+            foreach (var ctrl in charaEditorCtrlDict.Values)
+            {
+                ctrl.RefreshAccessoriesListIfExpired();
             }
         }
 
