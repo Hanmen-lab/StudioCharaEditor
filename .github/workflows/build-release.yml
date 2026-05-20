@@ -13,15 +13,12 @@ on:
 jobs:
   build:
 	runs-on: windows-latest
-	outputs:
-	  version: ${{ steps.version.outputs.version }}
 
 	steps:
 	- name: Checkout code
 	  uses: actions/checkout@v4
 	  with:
 		fetch-depth: 0
-		token: ${{ secrets.GITHUB_TOKEN }}
 
 	- name: Setup MSBuild
 	  uses: microsoft/setup-msbuild@v1
@@ -31,107 +28,23 @@ jobs:
 	- name: Setup NuGet
 	  uses: nuget/setup-nuget@v1
 
-	- name: Determine Version
-	  id: version
-	  shell: powershell
-	  run: |
-		# Get the latest tag
-		$latestTag = git describe --tags --abbrev=0 2>$null
-		if (-not $latestTag) { $latestTag = "v0.0.0" }
-
-		# Parse version
-		$version = $latestTag -replace '^v', ''
-		$parts = $version -split '\.'
-		$major = [int]$parts[0]
-		$minor = [int]$parts[1]
-		$patch = [int]$parts[2]
-
-		# Get commits since last tag
-		$commits = @(git log "$latestTag..HEAD" --oneline 2>$null)
-
-		# Determine version bump from commits
-		$hasBreaking = $commits -match 'BREAKING CHANGE|feat!:'
-		$hasFeature = $commits -match '^feat:'
-		$hasFix = $commits -match '^fix:'
-
-		if ($hasBreaking) {
-		  $major++
-		  $minor = 0
-		  $patch = 0
-		} elseif ($hasFeature) {
-		  $minor++
-		  $patch = 0
-		} elseif ($hasFix -or $commits.Count -gt 0) {
-		  $patch++
-		} else {
-		  # No new commits, keep same version
-		  $newVersion = "$major.$minor.$patch"
-		  echo "version=$newVersion" >> $env:GITHUB_OUTPUT
-		  exit 0
-		}
-
-		$newVersion = "$major.$minor.$patch"
-		echo "version=$newVersion" >> $env:GITHUB_OUTPUT
-		echo "Version: $newVersion"
-
-	- name: Update Assembly Version
-	  shell: powershell
-	  run: |
-		$version = "${{ steps.version.outputs.version }}"
-		$csprojPath = "HS2StudioCharaEditor.csproj"
-
-		# Update Version in csproj
-		[xml]$csproj = Get-Content $csprojPath
-		if (-not $csproj.Project.PropertyGroup[0].Version) {
-		  $propertyGroup = $csproj.Project.PropertyGroup[0]
-		  $versionElement = $csproj.CreateElement("Version")
-		  $versionElement.InnerText = $version
-		  $propertyGroup.AppendChild($versionElement) | Out-Null
-		} else {
-		  $csproj.Project.PropertyGroup[0].Version = $version
-		}
-		$csproj.Save($csprojPath)
-		echo "Updated version to $version"
-
 	- name: Restore NuGet packages
 	  run: nuget restore StudioCharaEditor.sln
 
 	- name: Build Solution
-	  run: msbuild StudioCharaEditor.sln /p:Configuration=Release /p:Platform="Any CPU" /p:DebugType=embedded
+	  run: msbuild StudioCharaEditor.sln /p:Configuration=Release /p:Platform="Any CPU"
 
 	- name: Upload build artifacts
 	  uses: actions/upload-artifact@v3
 	  with:
-		name: build-output-${{ steps.version.outputs.version }}
+		name: build-output
 		path: bin/Release/
 		retention-days: 30
 
-	- name: Create Git Tag and Release
-	  if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.version.outputs.version != ''
-	  uses: actions/github-script@v7
-	  with:
-		script: |
-		  const version = '${{ steps.version.outputs.version }}';
-		  const tag = `v${version}`;
-
-		  try {
-			await github.rest.git.createRef({
-			  owner: context.repo.owner,
-			  repo: context.repo.repo,
-			  ref: `refs/tags/${tag}`,
-			  sha: context.sha
-			});
-			console.log(`Created tag: ${tag}`);
-		  } catch (error) {
-			if (error.status !== 422) throw error;
-			console.log(`Tag ${tag} already exists`);
-		  }
-
-	- name: Create Release
-	  if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.version.outputs.version != ''
+	- name: Create Release on Tag
+	  if: startsWith(github.ref, 'refs/tags/v')
 	  uses: softprops/action-gh-release@v1
 	  with:
-		tag_name: v${{ steps.version.outputs.version }}
 		files: |
 		  bin/Release/**/*.dll
 		  bin/Release/**/*.pdb
