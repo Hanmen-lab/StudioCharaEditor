@@ -27,6 +27,7 @@
     <None Include=".github\upgrades\scenarios\sdk-style-conversion\scenario-instructions.md" />
     <None Include=".github\upgrades\scenarios\sdk-style-conversion\tasks.md" />
     <None Include=".github\upgrades\scenarios\sdk-style-conversion\tasks\01-convert-hs2studiocharaeditor-to-sdk-style\progress-details.md" />
+    <None Include=".github\workflows\build-release.yml" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Resources\Pangram-Light.otf" />

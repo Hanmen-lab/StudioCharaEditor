@@ -1,0 +1,64 @@
+{
+  "branches": [
+    "master",
+    "main"
+  ],
+  "commitMessageFormat": "Conventional Commits",
+  "types": [
+    {
+      "type": "feat",
+      "description": "A new feature",
+      "semver": "minor"
+    },
+    {
+      "type": "fix",
+      "description": "A bug fix",
+      "semver": "patch"
+    },
+    {
+      "type": "docs",
+      "description": "Documentation only changes",
+      "semver": "patch",
+      "release": false
+    },
+    {
+      "type": "style",
+      "description": "Changes that don't affect code logic",
+      "semver": "patch",
+      "release": false
+    },
+    {
+      "type": "refactor",
+      "description": "Code refactoring without feature or bug changes",
+      "semver": "patch",
+      "release": false
+    },
+    {
+      "type": "perf",
+      "description": "Performance improvements",
+      "semver": "patch"
+    },
+    {
+      "type": "test",
+      "description": "Adding missing tests",
+      "semver": "patch",
+      "release": false
+    },
+    {
+      "type": "ci",
+      "description": "CI/CD configuration changes",
+      "semver": "patch",
+      "release": false
+    },
+    {
+      "type": "chore",
+      "description": "Other changes that don't modify code",
+      "semver": "patch",
+      "release": false
+    }
+  ],
+  "breakingChangeIndicators": [
+    "BREAKING CHANGE",
+    "BREAKING CHANGES"
+  ]
+}
