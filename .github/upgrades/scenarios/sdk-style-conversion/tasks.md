@@ -4,7 +4,7 @@
 
 | Task ID | Description | Status |
 |---------|-------------|--------|
-| 01-convert-sdk-style | Convert HS2StudioCharaEditor to SDK-style format | pending |
+| 01-convert-sdk-style | Convert HS2StudioCharaEditor to SDK-style format | completed |
 
 ---
 
@@ -13,6 +13,7 @@
 ### 01-convert-sdk-style
 - **Description**: Convert HS2StudioCharaEditor to SDK-style format
 - **Project**: HS2StudioCharaEditor
-- **Current Status**: pending
+- **Current Status**: completed
 - **Priority**: High
 - **Risk Level**: Medium
+- **Completion Date**: 2026-05-20

@@ -3,10 +3,11 @@
   "operationId": "857c4926-cd05-4ca1-81ad-90bdaf9c03f1",
   "description": "Converts legacy .NET projects to SDK-style project format. Use when user wants to convert to SDK-style, modernize project files, or migrate from legacy csproj format. Does not change target frameworks.\n",
   "startTime": "2026-05-20T07:55:59.3154497Z",
-  "lastUpdateTime": "2026-05-20T07:58:12.4354619Z",
+  "lastUpdateTime": "2026-05-20T08:01:05.6141172Z",
   "properties": {
     "taskStates": {
-      "01-convert-hs2studiocharaeditor-to-sdk-style": "InProgress"
+      "01-convert-hs2studiocharaeditor-to-sdk-style": "Completed",
+      "01-convert-sdk-style": "Completed"
     }
   },
   "folderPath": ""
