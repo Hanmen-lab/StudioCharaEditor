@@ -1,0 +1,9 @@
+{
+  "scenarioId": "sdk-style-conversion",
+  "operationId": "857c4926-cd05-4ca1-81ad-90bdaf9c03f1",
+  "description": "Converts legacy .NET projects to SDK-style project format. Use when user wants to convert to SDK-style, modernize project files, or migrate from legacy csproj format. Does not change target frameworks.\n",
+  "startTime": "2026-05-20T07:55:59.3154497Z",
+  "lastUpdateTime": "2026-05-20T07:55:59.3325529Z",
+  "properties": {},
+  "folderPath": ""
+}
