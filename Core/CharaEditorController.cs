@@ -5,12 +5,11 @@ using System.Collections.Generic;
 using UnityEngine;
 using PushUpAI;
 using HS2_BoobSettings;
-using KKABMX.Core;
 using KoiSkinOverlayX;
 using KoiClothesOverlayX;
 using MessagePack;
 using CharaCustom;
-using static Illusion.Utils;
+using KKABMX.Core;
 
 namespace StudioCharaEditor
 {

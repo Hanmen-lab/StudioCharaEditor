@@ -7,9 +7,6 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="HS2ABMX">
-      <HintPath>libdll\HS2ABMX.dll</HintPath>
-    </Reference>
     <Reference Include="HS2_BoobSettings">
       <HintPath>libdll\HS2_BoobSettings.dll</HintPath>
     </Reference>
@@ -25,9 +22,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include=".github\upgrades\scenarios\sdk-style-conversion\assessment.md" />
+    <None Include=".github\upgrades\scenarios\sdk-style-conversion\execution-log.md" />
     <None Include=".github\upgrades\scenarios\sdk-style-conversion\plan.md" />
     <None Include=".github\upgrades\scenarios\sdk-style-conversion\scenario-instructions.md" />
     <None Include=".github\upgrades\scenarios\sdk-style-conversion\tasks.md" />
+    <None Include=".github\upgrades\scenarios\sdk-style-conversion\tasks\01-convert-hs2studiocharaeditor-to-sdk-style\progress-details.md" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Resources\Pangram-Light.otf" />
@@ -54,36 +53,12 @@
     <EmbeddedResource Include="Resources\UI\ui_window.png" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="ABMX.HS2ABMX" Version="5.4.0" />
     <PackageReference Include="BepInEx.Analyzers" Version="1.0.4" />
     <PackageReference Include="ExtensibleSaveFormat.HoneySelect2" Version="21.1.2" />
     <PackageReference Include="IllusionLibs.BepInEx" Version="5.4.22" />
     <PackageReference Include="IllusionLibs.BepInEx.Harmony" Version="2.9.0" />
     <PackageReference Include="IllusionLibs.HoneySelect2.AllPackages" Version="2020.5.29.5" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.Assembly-CSharp" Version="2020.5.29.5" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.Assembly-CSharp-firstpass" Version="2020.5.29.5" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.Cinemachine" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.IL" Version="2020.5.29.5" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.Sirenix.Serialization" Version="2020.5.29.5" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UniRx" Version="2020.5.29.5" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.Unity.Postprocessing.Runtime" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.Unity.TextMeshPro" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.AIModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.AnimationModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.AssetBundleModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.AudioModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.ClothModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.CoreModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.ImageConversionModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.IMGUIModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.JSONSerializeModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.PhysicsModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.ScreenCaptureModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.TextRenderingModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.UI" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.UIModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.UnityWebRequestWWWModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.VRModule" Version="2018.4.11.4" />
-    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.XRModule" Version="2018.4.11.4" />
     <PackageReference Include="IllusionModdingAPI.HS2API" Version="1.46.0" />
     <PackageReference Include="Microsoft.Unity.Analyzers" Version="1.25.0" />
     <PackageReference Include="OverlayMods.HoneySelect2" Version="7.1.2" />
