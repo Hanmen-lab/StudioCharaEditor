@@ -14,14 +14,17 @@ namespace StudioCharaEditor
     [BepInPlugin(GUID, Name, Version)]
     [BepInDependency(KoikatuAPI.GUID, "1.43")]
     [BepInDependency("KCOX", "7.0")]
+    [BepInDependency("com.animal42069.studiobetterpenetration", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency("com.hooh.hooah", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("mikke.pushUpAI", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.fairbair.hs2_boobsettings", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInProcess("StudioNEOV2")]
     [BepInProcess("StudioNEOV2.exe")]
     public class StudioCharaEditor : BaseUnityPlugin
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "2.3.2";
+        public const string Version = "2.5.0";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -45,6 +48,7 @@ namespace StudioCharaEditor
         public static ConfigEntry<string> UILanguage { get; private set; }
 
         internal SimpleToolbarToggle _toolbarCharEditor;
+        private Harmony harmony;
 
         //private ConfigEntry<string> configGreeting;
         //private ConfigEntry<bool> configDisplayGreeting;
@@ -53,6 +57,7 @@ namespace StudioCharaEditor
         {
             Instance = this;
             Logger = base.Logger;
+            Logger.LogInfo("Studio Chara Editor loaded.");
 
             // config
             KeyShowUI = Config.Bind("General", "StudioCharaEditor UI shortcut key", new KeyboardShortcut(KeyCode.D, KeyCode.LeftShift), "Toggles the main UI on and off.");
@@ -91,9 +96,10 @@ namespace StudioCharaEditor
             UnityEngine.Object.DontDestroyOnLoad(gameObject);
             CharaEditorMgr.Install(gameObject);
 
-            // Patch
-            //Harmony harmony = new Harmony(GUID);
-            //harmony.PatchAll(Assembly.GetExecutingAssembly());
+            // Patch compatibility hooks that must run after optional plugin dependencies load.
+            harmony = new Harmony(GUID);
+            PluginBetterPenetration.InstallHarmonyPatches(harmony);
+            PluginHooahComponents.Initialize(harmony);
 
             // Toolbar Button
             _toolbarCharEditor = new SimpleToolbarToggle(

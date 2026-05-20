@@ -313,7 +313,14 @@ namespace StudioCharaEditor
             {
                 chaCtrl.releaseCustomInputTexture = false;
                 chaCtrl.loadWithDefaultColorAndPtn = false;
-                chaCtrl.ChangeClothes(false);
+                if (PluginBetterPenetration.HasStudioPlugin())
+                {
+                    PluginBetterPenetration.LogSkippedInitialClothesRefresh();
+                }
+                else
+                {
+                    chaCtrl.ChangeClothes(false);
+                }
                 textureInited = true;
             }
             else if (!init && textureInited)
@@ -868,7 +875,7 @@ namespace StudioCharaEditor
 
             if (updateColor)
             {
-                chaCtrl.ChangeCustomClothes(partIndex, true, updatePtn1, updatePtn2, updatePtn3);
+                CharaDetailSet.updateClothCustomTexture(chaCtrl, partIndex, true, updatePtn1, updatePtn2, updatePtn3);
                 UpdateDetailInfo_ClothType(category2);
             }
 

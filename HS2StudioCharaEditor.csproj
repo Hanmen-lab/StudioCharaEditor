@@ -134,9 +134,13 @@
     <Compile Include="Core\CharaEditorController.cs" />
     <Compile Include="Core\CharaEditorMgr.cs" />
     <Compile Include="Core\PluginABMX.cs" />
+    <Compile Include="Core\PluginBetterPenetration.cs" />
     <Compile Include="Core\PluginBoobSetting.cs" />
+    <Compile Include="Core\PluginHooahComponents.cs" />
     <Compile Include="Core\PluginMoreAccessories.cs" />
     <Compile Include="Core\PluginOverlay.cs" />
+    <Compile Include="Core\PluginTimelineCompatibility.cs" />
+    <Compile Include="GUI\CharaEditorTheme.cs" />
     <Compile Include="GUI\CharaEditorUI.cs" />
     <Compile Include="StudioCharaEditor.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
@@ -149,7 +153,28 @@
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>
+    <EmbeddedResource Include="Resources\Pangram-Light.otf" />
     <EmbeddedResource Include="Resources\toolbarbutton.png" />
+    <EmbeddedResource Include="Resources\UI\ui_accent.png" />
+    <EmbeddedResource Include="Resources\UI\ui_accent_active.png" />
+    <EmbeddedResource Include="Resources\UI\ui_accent_hover.png" />
+    <EmbeddedResource Include="Resources\UI\ui_button.png" />
+    <EmbeddedResource Include="Resources\UI\ui_button_active.png" />
+    <EmbeddedResource Include="Resources\UI\ui_button_hover.png" />
+    <EmbeddedResource Include="Resources\UI\ui_clear.png" />
+    <EmbeddedResource Include="Resources\UI\ui_close.png" />
+    <EmbeddedResource Include="Resources\UI\ui_danger.png" />
+    <EmbeddedResource Include="Resources\UI\ui_field.png" />
+    <EmbeddedResource Include="Resources\UI\ui_field_focus.png" />
+    <EmbeddedResource Include="Resources\UI\ui_panel.png" />
+    <EmbeddedResource Include="Resources\UI\ui_panel_hover.png" />
+    <EmbeddedResource Include="Resources\UI\ui_scroll_thumb.png" />
+    <EmbeddedResource Include="Resources\UI\ui_scroll_track.png" />
+    <EmbeddedResource Include="Resources\UI\ui_slider_thumb.png" />
+    <EmbeddedResource Include="Resources\UI\ui_slider_track.png" />
+    <EmbeddedResource Include="Resources\UI\ui_toggle_off.png" />
+    <EmbeddedResource Include="Resources\UI\ui_toggle_on.png" />
+    <EmbeddedResource Include="Resources\UI\ui_window.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>

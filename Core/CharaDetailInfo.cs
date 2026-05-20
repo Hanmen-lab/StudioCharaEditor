@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -297,8 +298,49 @@ namespace StudioCharaEditor
         
         public static void updateClothType(ChaControl chaCtrl, int id, int clothIndex)
         {
+            chaCtrl.nowCoordinate.clothes.parts[clothIndex].id = id;
             chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].id = id;
             chaCtrl.ChangeClothes(clothIndex, id, false);
+            PluginHooahComponents.ScheduleRebindDickColliders(chaCtrl);
+        }
+
+        public static IEnumerator updateClothTypeAsync(ChaControl chaCtrl, int id, int clothIndex, string clothName, CharaEditorController cec)
+        {
+            chaCtrl.nowCoordinate.clothes.parts[clothIndex].id = id;
+            chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].id = id;
+            PluginBetterPenetration.ClothesReloadState bpState = PluginBetterPenetration.BeforeClothesReload(chaCtrl);
+            yield return chaCtrl.ChangeClothesAsync(clothIndex, id, false, false);
+            PluginBetterPenetration.AfterClothesReload(bpState);
+            PluginHooahComponents.ScheduleRebindDickColliders(chaCtrl);
+            cec.UpdateDetailInfo_ClothType(clothName);
+        }
+
+        public static bool updateClothCustomTexture(ChaControl chaCtrl, int clothIndex, bool updateColor, bool updateTex01, bool updateTex02, bool updateTex03)
+        {
+            bool updated = chaCtrl.ChangeCustomClothes(clothIndex, updateColor, updateTex01, updateTex02, updateTex03);
+            if (updated)
+            {
+                return true;
+            }
+
+            try
+            {
+                updated = chaCtrl.InitBaseCustomTextureClothes(clothIndex) &&
+                          chaCtrl.ChangeCustomClothes(clothIndex, updateColor, updateTex01, updateTex02, updateTex03);
+                if (!updated && StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger.LogWarning($"Failed to refresh cloth texture for slot {clothIndex} after custom texture initialization.");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger.LogWarning($"Failed to initialize cloth custom texture for slot {clothIndex}: {ex.Message}");
+                }
+            }
+
+            return updated;
         }
         #endregion
 
@@ -2577,7 +2619,7 @@ namespace StudioCharaEditor
             {
                 void updateClothPatternLayout(ChaControl chaCtrl, int clothIndexL, int colorIndexL, string axis, float newValue)
                 {
-                    Vector4 oldLayout = chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].layout;
+                    Vector4 oldLayout = chaCtrl.nowCoordinate.clothes.parts[clothIndexL].colorInfo[colorIndexL].layout;
                     Vector4 newLayout;
                     if (axis == "x")
                         newLayout = new Vector4(newValue, oldLayout.y, oldLayout.z, oldLayout.w);
@@ -2589,9 +2631,18 @@ namespace StudioCharaEditor
                         newLayout = new Vector4(oldLayout.x, oldLayout.y, oldLayout.z, newValue);
                     else
                         throw new Exception();
-                    chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].layout = newLayout;
-                    chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].layout = newLayout;
-                    chaCtrl.ChangeCustomClothes(clothIndex, true, false, false, false);
+                    chaCtrl.nowCoordinate.clothes.parts[clothIndexL].colorInfo[colorIndexL].layout = newLayout;
+                    chaCtrl.chaFile.coordinate.clothes.parts[clothIndexL].colorInfo[colorIndexL].layout = newLayout;
+                    updateClothColorTexture(chaCtrl, clothIndexL, true, colorIndexL);
+                }
+
+                void updateClothColorTexture(ChaControl chaCtrl, int clothIndexL, bool updateColor, int forcePatternIndex = -1)
+                {
+                    ChaFileClothes.PartsInfo partsInfo = chaCtrl.nowCoordinate.clothes.parts[clothIndexL];
+                    bool updateTex01 = (forcePatternIndex == 0) || partsInfo.colorInfo[0].pattern != 0;
+                    bool updateTex02 = (forcePatternIndex == 1) || partsInfo.colorInfo[1].pattern != 0;
+                    bool updateTex03 = (forcePatternIndex == 2) || partsInfo.colorInfo[2].pattern != 0;
+                    updateClothCustomTexture(chaCtrl, clothIndexL, updateColor, updateTex01, updateTex02, updateTex03);
                 }
 
                 string colorNo = " " + (colorIndex + 1).ToString();
@@ -2613,7 +2664,7 @@ namespace StudioCharaEditor
                     Set = (chaCtrl, v) => {
                         chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].baseColor = (Color)v;
                         chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].baseColor = (Color)v;
-                        chaCtrl.ChangeCustomClothes(clothIndex, true, false, false, false);
+                        updateClothColorTexture(chaCtrl, clothIndex, true);
                     },
                 };
                 colorInfo.Add(color);
@@ -2628,7 +2679,7 @@ namespace StudioCharaEditor
                     {
                         chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].glossPower = (float)v;
                         chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].glossPower = (float)v;
-                        chaCtrl.ChangeCustomClothes(clothIndex, true, false, false, false);
+                        updateClothColorTexture(chaCtrl, clothIndex, true);
                     },
                 };
                 colorInfo.Add(gloss);
@@ -2643,7 +2694,7 @@ namespace StudioCharaEditor
                     {
                         chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].metallicPower = (float)v;
                         chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].metallicPower = (float)v;
-                        chaCtrl.ChangeCustomClothes(clothIndex, true, false, false, false);
+                        updateClothColorTexture(chaCtrl, clothIndex, true);
                     },
                 };
                 colorInfo.Add(metallic);
@@ -2658,7 +2709,7 @@ namespace StudioCharaEditor
                     {
                         chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].pattern = (int)v;
                         chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].pattern = (int)v;
-                        chaCtrl.ChangeCustomClothes(clothIndex, false, colorIndex == 0, colorIndex == 1, colorIndex == 2);
+                        updateClothColorTexture(chaCtrl, clothIndex, true, colorIndex);
                         // update cloth type
                         cec.UpdateDetailInfo_ClothType(clothName);
                     },
@@ -2678,7 +2729,7 @@ namespace StudioCharaEditor
                         Set = (chaCtrl, v) => {
                             chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].patternColor = (Color)v;
                             chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].patternColor = (Color)v;
-                            chaCtrl.ChangeCustomClothes(clothIndex, true, false, false, false);
+                            updateClothColorTexture(chaCtrl, clothIndex, true, colorIndex);
                         },
                     };
                     colorInfo.Add(patternColor);
@@ -2733,7 +2784,7 @@ namespace StudioCharaEditor
                         {
                             chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].rotation = (float)v;
                             chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].rotation = (float)v;
-                            chaCtrl.ChangeCustomClothes(clothIndex, true, false, false, false);
+                            updateClothColorTexture(chaCtrl, clothIndex, true, colorIndex);
                         },
                     };
                     colorInfo.Add(patternRotate);
@@ -2758,10 +2809,7 @@ namespace StudioCharaEditor
                 Get = (chaCtrl) => { return chaCtrl.nowCoordinate.clothes.parts[index].id; },
                 Set = (chaCtrl, v) =>
                 {
-                    chaCtrl.chaFile.coordinate.clothes.parts[index].id = (int)v;
-                    chaCtrl.ChangeClothes(index, (int)v, false);
-                    // update cloth type
-                    cec.UpdateDetailInfo_ClothType(clothName);
+                    CharaEditorMgr.Instance.StartCoroutine(updateClothTypeAsync(chaCtrl, (int)v, index, clothName, cec));
                 },
                 SelectorList = (chaCtrl) => { return CvsBase.CreateSelectList(typeCategoryNo); },
             };
@@ -3135,6 +3183,7 @@ namespace StudioCharaEditor
                     if (accInfo.IsVanillaSlot)
                         accInfo.orgPartsInfo.addMove[moveIndex, trfIndex] = newV;
                     chaCtrl.UpdateAccessoryMoveFromInfo(accInfo.slotNo);
+                    PluginHooahComponents.ScheduleRebindDickColliders(chaCtrl);
                 }
 
                 string moveNo = (moveIndex + 1).ToString();
@@ -3268,38 +3317,41 @@ namespace StudioCharaEditor
                 Get = (chaCtrl) => { return accInfo.category; },
                 Set = (chaCtrl, v) =>
                 {
-                    accInfo.partsInfo.type = (int)v;
-                    accInfo.partsInfo.parentKey = "";
-                    //if (accInfo.IsVanillaSlot)
-                    //{
-                    //    accInfo.orgPartsInfo.type = accInfo.partsInfo.type;
-                    //}
-                    /*
-                    for (int i = 0; i < 2; i++)
+                    PluginBetterPenetration.RunWithReloadRepair(chaCtrl, () =>
                     {
-                        base.orgAcs.parts[base.SNo].addMove[i, 0] = (accInfo.partsInfo.addMove[i, 0] = Vector3.zero);
-                        base.orgAcs.parts[base.SNo].addMove[i, 1] = (accInfo.partsInfo.addMove[i, 1] = Vector3.zero);
-                        base.orgAcs.parts[base.SNo].addMove[i, 2] = (accInfo.partsInfo.addMove[i, 2] = Vector3.one);
-                    }
-                    */
-                    chaCtrl.ChangeAccessory(accInfo.slotNo, accInfo.partsInfo.type, ChaAccessoryDefine.AccessoryDefaultIndex[(int)v - 350], "", true);
-                    /*
-                    this.SetDefaultColor();
-                    base.chaCtrl.ChangeAccessoryColor(base.SNo);
-                    */
-                    //accInfo.partsInfo.noShake = false;
-                    if (accInfo.IsVanillaSlot)
-                    {
-                        accInfo.orgPartsInfo.type = accInfo.partsInfo.type;
-                        accInfo.orgPartsInfo.id = accInfo.partsInfo.id;
-                        accInfo.orgPartsInfo.parentKey = accInfo.partsInfo.parentKey;
-                        accInfo.orgPartsInfo.noShake = accInfo.partsInfo.noShake;
+                        accInfo.partsInfo.type = (int)v;
+                        accInfo.partsInfo.parentKey = "";
+                        //if (accInfo.IsVanillaSlot)
+                        //{
+                        //    accInfo.orgPartsInfo.type = accInfo.partsInfo.type;
+                        //}
+                        /*
+                        for (int i = 0; i < 2; i++)
+                        {
+                            base.orgAcs.parts[base.SNo].addMove[i, 0] = (accInfo.partsInfo.addMove[i, 0] = Vector3.zero);
+                            base.orgAcs.parts[base.SNo].addMove[i, 1] = (accInfo.partsInfo.addMove[i, 1] = Vector3.zero);
+                            base.orgAcs.parts[base.SNo].addMove[i, 2] = (accInfo.partsInfo.addMove[i, 2] = Vector3.one);
+                        }
+                        */
+                        chaCtrl.ChangeAccessory(accInfo.slotNo, accInfo.partsInfo.type, ChaAccessoryDefine.AccessoryDefaultIndex[(int)v - 350], "", true);
+                        /*
+                        this.SetDefaultColor();
+                        base.chaCtrl.ChangeAccessoryColor(base.SNo);
+                        */
+                        //accInfo.partsInfo.noShake = false;
+                        if (accInfo.IsVanillaSlot)
+                        {
+                            accInfo.orgPartsInfo.type = accInfo.partsInfo.type;
+                            accInfo.orgPartsInfo.id = accInfo.partsInfo.id;
+                            accInfo.orgPartsInfo.parentKey = accInfo.partsInfo.parentKey;
+                            accInfo.orgPartsInfo.noShake = accInfo.partsInfo.noShake;
 
-                    }
+                        }
 
-                    // update info
-                    accInfo.UpdateAccessoryInfo(chaCtrl);
-                    cec.UpdateDetailInfo_AccType(accKey);
+                        // update info
+                        accInfo.UpdateAccessoryInfo(chaCtrl);
+                        cec.UpdateDetailInfo_AccType(accKey);
+                    });
                 },
                 SelectorList = (chaCtrl) => { return GetAccessoryCategorySelectList(); },
             });
@@ -3315,44 +3367,47 @@ namespace StudioCharaEditor
                     Get = (chaCtrl) => { return accInfo.partsInfo.id; },
                     Set = (chaCtrl, v) =>
                     {
-                        //bool oldAccIsHair = accInfo.accCmp != null ? oldAccIsHair = accInfo.accCmp.typeHair : false;
-                        string oldParentKey = accInfo.partsInfo.parentKey;
-
-                        // change acc id
-                        chaCtrl.ChangeAccessory(accInfo.slotNo, accInfo.partsInfo.type, (int)v, "", false);
-
-                        // restore setting
-                        if (!oldParentKey.Equals(accInfo.partsInfo.parentKey))
+                        PluginBetterPenetration.RunWithReloadRepair(chaCtrl, () =>
                         {
-                            chaCtrl.ChangeAccessoryParent(accInfo.slotNo, oldParentKey);
-                        }
-                        //accInfo.partsInfo.noShake = false;  // reset no shake flag
+                            //bool oldAccIsHair = accInfo.accCmp != null ? oldAccIsHair = accInfo.accCmp.typeHair : false;
+                            string oldParentKey = accInfo.partsInfo.parentKey;
+
+                            // change acc id
+                            chaCtrl.ChangeAccessory(accInfo.slotNo, accInfo.partsInfo.type, (int)v, "", false);
+
+                            // restore setting
+                            if (!oldParentKey.Equals(accInfo.partsInfo.parentKey))
+                            {
+                                chaCtrl.ChangeAccessoryParent(accInfo.slotNo, oldParentKey);
+                            }
+                            //accInfo.partsInfo.noShake = false;  // reset no shake flag
                         
-                        // org copy
-                        if (accInfo.IsVanillaSlot)
-                        {
-                            accInfo.orgPartsInfo.id = accInfo.partsInfo.id;
-                            accInfo.orgPartsInfo.parentKey = accInfo.partsInfo.parentKey;
-                            accInfo.orgPartsInfo.noShake = accInfo.partsInfo.noShake;
-                        }
+                            // org copy
+                            if (accInfo.IsVanillaSlot)
+                            {
+                                accInfo.orgPartsInfo.id = accInfo.partsInfo.id;
+                                accInfo.orgPartsInfo.parentKey = accInfo.partsInfo.parentKey;
+                                accInfo.orgPartsInfo.noShake = accInfo.partsInfo.noShake;
+                            }
 
-                        /*
-                        this.SetDefaultColor();
-                        base.chaCtrl.ChangeAccessoryColor(base.SNo);
-                        bool flag2 = false;
-                        if (base.chaCtrl.cmpAccessory != null && null != base.chaCtrl.cmpAccessory[base.SNo])
-                        {
-                            flag2 = base.chaCtrl.cmpAccessory[base.SNo].typeHair;
-                        }
-                        if (!oldAccIsHair && flag2)
-                        {
-                            this.ChangeHairTypeAccessoryColor(0);
-                        }
-                        */
+                            /*
+                            this.SetDefaultColor();
+                            base.chaCtrl.ChangeAccessoryColor(base.SNo);
+                            bool flag2 = false;
+                            if (base.chaCtrl.cmpAccessory != null && null != base.chaCtrl.cmpAccessory[base.SNo])
+                            {
+                                flag2 = base.chaCtrl.cmpAccessory[base.SNo].typeHair;
+                            }
+                            if (!oldAccIsHair && flag2)
+                            {
+                                this.ChangeHairTypeAccessoryColor(0);
+                            }
+                            */
 
-                        // update info
-                        accInfo.UpdateAccessoryInfo(chaCtrl);
-                        cec.UpdateDetailInfo_AccType(accKey);
+                            // update info
+                            accInfo.UpdateAccessoryInfo(chaCtrl);
+                            cec.UpdateDetailInfo_AccType(accKey);
+                        });
                     },
                     SelectorList = (chaCtrl) => { return CvsBase.CreateSelectList((ChaListDefine.CategoryNo)accInfo.category); },
                 });
@@ -3365,10 +3420,13 @@ namespace StudioCharaEditor
                     Get = (chaCtrl) => { return ChaAccessoryDefine.GetAccessoryParentInt(accInfo.partsInfo.parentKey); },
                     Set = (chaCtrl, v) =>
                     {
-                        string pKey = ((ChaAccessoryDefine.AccessoryParentKey)((int)v)).ToString();
-                        chaCtrl.ChangeAccessoryParent(accInfo.slotNo, pKey);
-                        if (accInfo.IsVanillaSlot)
-                            accInfo.orgPartsInfo.parentKey = accInfo.partsInfo.parentKey;
+                        PluginBetterPenetration.RunWithReloadRepair(chaCtrl, () =>
+                        {
+                            string pKey = ((ChaAccessoryDefine.AccessoryParentKey)((int)v)).ToString();
+                            chaCtrl.ChangeAccessoryParent(accInfo.slotNo, pKey);
+                            if (accInfo.IsVanillaSlot)
+                                accInfo.orgPartsInfo.parentKey = accInfo.partsInfo.parentKey;
+                        });
                     },
                     SelectorList = (chaCtrl) => { return GetAccessoryParentSelectList(); },
                 });
