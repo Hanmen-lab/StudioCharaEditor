@@ -16,25 +16,32 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v1
+        uses: microsoft/setup-msbuild@v2 
         with:
           vs-version: 17.0
+          
       - name: Setup NuGet
-        uses: nuget/setup-nuget@v1
+        uses: nuget/setup-nuget@v2
+        
       - name: Restore NuGet packages
-        run: nuget restore StudioCharaEditor.sln
+
+        run: nuget restore StudioCharaEditor.sln -Source "https://api.nuget.org/v3/index.json;https://nuget.bepinex.dev/v3/index.json;https://pkgs.dev.azure.com/IllusionMods/IllusionMods/_packaging/IllusionMods/nuget/v3/index.json"
+        
       - name: Build Solution
         run: msbuild StudioCharaEditor.sln /p:Configuration=Release /p:Platform="Any CPU"
+        
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-output
           path: bin/Release/
           retention-days: 30
+          
       - name: Create Release on Tag
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2  
         with:
           files: |
             bin/Release/**/*.dll
