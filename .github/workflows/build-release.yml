@@ -27,7 +27,7 @@ jobs:
         
       - name: Restore NuGet packages
 
-        run: nuget restore StudioCharaEditor.sln -Source "https://api.nuget.org/v3/index.json;https://nuget.bepinex.dev/v3/index.json;https://pkgs.dev.azure.com/IllusionMods/IllusionMods/_packaging/IllusionMods/nuget/v3/index.json"
+        run: nuget restore StudioCharaEditor.sln -NonInteractive -Source "https://api.nuget.org/v3/index.json;https://nuget.bepinex.dev/v3/index.json;https://pkgs.dev.azure.com/IllusionMods/IllusionMods/_packaging/IllusionMods/nuget/v3/index.json"
         
       - name: Build Solution
         run: msbuild StudioCharaEditor.sln /p:Configuration=Release /p:Platform="Any CPU"
