@@ -27,7 +27,7 @@ jobs:
       - name: Build Solution
         run: msbuild StudioCharaEditor.sln /p:Configuration=Release /p:Platform="Any CPU"
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-output
           path: bin/Release/
