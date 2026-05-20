@@ -1,5 +1,6 @@
 ﻿using AIChara;
 using BepInEx.Logging;
+using BepInEx;
 using CharaCustom;
 using EpicToonFX;
 using HarmonyLib;
@@ -12,6 +13,8 @@ using System.IO;
 using System.Linq;
 using System.Runtime.ConstrainedExecution;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using UnityEngine;
 using static AIChara.ChaListDefine;
 
@@ -26,6 +29,12 @@ namespace StudioCharaEditor
             ForPaste,
             PasteSlotPrompt,
         };
+
+        private enum SelectorViewMode
+        {
+            List,
+            Grid,
+        }
 
         private readonly int windowID = 10123;
         private readonly int selectorWindowID = 10124;
@@ -58,6 +67,8 @@ namespace StudioCharaEditor
         private readonly Dictionary<string, SelectorRenderRange> selectorRenderRangePool = new Dictionary<string, SelectorRenderRange>();
         private readonly Dictionary<string, SelectorSearchState> selectorSearchPool = new Dictionary<string, SelectorSearchState>();
         private readonly Dictionary<string, ColorSwatch> colorSwatchPool = new Dictionary<string, ColorSwatch>();
+        private readonly Dictionary<string, string> selectorTranslationMap = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> selectorTranslationLookupCache = new Dictionary<string, string>(StringComparer.Ordinal);
 
         // save
         private OCIChar savingChara;
@@ -80,13 +91,18 @@ namespace StudioCharaEditor
         private Vector2 leftScroll = Vector2.zero;
         private Vector2 rightScroll = Vector2.zero;
         private bool resizingWindow = false;
+        private bool resizingSelectorWindow = false;
         private Vector2 resizeStartMouse = Vector2.zero;
         private Vector2 resizeStartSize = Vector2.zero;
+        private Vector2 selectorResizeStartMouse = Vector2.zero;
+        private Vector2 selectorResizeStartSize = Vector2.zero;
         private int namew = 100;
         private float thumbSize = 100;
         private float thumbSizeSmall = 70;
         private float thumbBtnHeight = 40;
         private GUIStyle resizeGripStyle;
+        private GUIStyle selectorGridLabelStyle;
+        private GUIStyle selectorTooltipStyle;
         private const float ThumbListRowGap = 4f;
         private const int ColorSwatchWidth = 74;
         private const int ColorSwatchHeight = 20;
@@ -96,10 +112,17 @@ namespace StudioCharaEditor
         private const float ResizeGripReserve = 28f;
         private const float SelectorPanelGap = 8f;
         private const float SelectorPanelWidth = 540f;
+        private const float SelectorPanelDefaultHeight = 520f;
+        private const float SelectorMinWindowWidth = 380f;
+        private const float SelectorMinWindowHeight = 320f;
         private const float SelectorFolderWidth = 112f;
         private const float SelectorFolderRowHeight = 24f;
         private const float SelectorPanelThumbSize = 78f;
         private const float SelectorPanelButtonHeight = 40f;
+        private const float SelectorGridMinCellWidth = 96f;
+        private const float SelectorGridCellHeight = 108f;
+        private const float SelectorGridThumbSize = 76f;
+        private const float SelectorGridGap = 4f;
         private const float ThinSliderHeight = 20f;
         private const float ThinSliderTrackHeight = 2f;
         private const float ThinSliderThumbSize = 7f;
@@ -108,23 +131,31 @@ namespace StudioCharaEditor
         private const float SelectorSearchDelay = 0.25f;
         private const int SelectorSearchBatchSize = 120;
         private const int MaxSelectorRowsPerFrame = 20;
+        private const int MaxSelectorGridCellsPerFrame = 48;
         private const int MaxSelectorThumbLoadsPerFrame = 1;
         private const float SelectorThumbLoadIdleDelay = 0.25f;
+        private const float SelectorThumbLoadInterval = 0.04f;
         private const float SelectorScrollChangeEpsilon = 0.5f;
         private const string SelectorFolderAllKey = "__all";
         private const string SelectorFolderFavoritesKey = "__favorites";
         private const string SelectorFolderCustomPrefix = "custom:";
-        private const float SelectorFavoriteButtonWidth = 24f;
+        private const string SelectorItemKeyVersion = "v3";
+        private const string SelectorFoldersXmlRootName = "studioCharaEditorFolders";
+        private const float SelectorFavoriteButtonWidth = 30f;
         private readonly Dictionary<string, PendingColorChange> pendingColorChanges = new Dictionary<string, PendingColorChange>();
         private readonly HashSet<string> selectorFavoriteKeys = new HashSet<string>();
         private readonly Dictionary<string, List<SelectorCustomFolder>> selectorCustomFoldersByScope = new Dictionary<string, List<SelectorCustomFolder>>();
         private int selectorThumbLoadFrame = -1;
         private int selectorThumbLoadsThisFrame;
         private float selectorThumbLoadPauseUntil;
+        private float selectorNextThumbLoadTime;
         private bool selectorFavoritesLoaded;
         private bool selectorCustomFoldersLoaded;
+        private bool selectorTranslationsLoaded;
         private int selectorFavoriteVersion;
         private int selectorCustomFolderVersion;
+        private bool selectorWindowHasUserSize;
+        private SelectorViewMode selectorDefaultViewMode = SelectorViewMode.List;
         private static readonly string[] HairSetKeys =
         {
             "Hair#BackHair",
@@ -198,6 +229,7 @@ namespace StudioCharaEditor
             public int FolderCustomVersion = -1;
             public bool ThumbList;
             public bool PendingScrollToSelected;
+            public SelectorViewMode ViewMode = SelectorViewMode.List;
         }
 
         private class SelectorFolderInfo
@@ -214,6 +246,8 @@ namespace StudioCharaEditor
             public string Name;
             public HashSet<string> ItemKeys = new HashSet<string>();
             public HashSet<int> LegacyItemIds = new HashSet<int>();
+            public bool HasLegacyItemKeys;
+            public bool HasLegacyStrictItemKeys;
         }
 
         private enum SelectorContextMenuType
@@ -344,6 +378,39 @@ namespace StudioCharaEditor
             resizeGripStyle.normal.textColor = new Color(0.58f, 0.66f, 0.70f, 0.85f);
             resizeGripStyle.hover.textColor = Color.white;
             resizeGripStyle.active.textColor = Color.white;
+        }
+
+        private GUIStyle GetSelectorGridLabelStyle()
+        {
+            if (selectorGridLabelStyle == null)
+            {
+                selectorGridLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.UpperCenter,
+                    wordWrap = true,
+                    clipping = TextClipping.Clip,
+                    fontSize = 11,
+                    padding = new RectOffset(4, 4, 2, 2),
+                    margin = new RectOffset(0, 0, 0, 0)
+                };
+            }
+
+            return selectorGridLabelStyle;
+        }
+
+        private GUIStyle GetSelectorTooltipStyle()
+        {
+            if (selectorTooltipStyle == null)
+            {
+                selectorTooltipStyle = new GUIStyle(GUI.skin.box)
+                {
+                    alignment = TextAnchor.UpperLeft,
+                    wordWrap = true,
+                    padding = new RectOffset(8, 8, 6, 6)
+                };
+            }
+
+            return selectorTooltipStyle;
         }
 
         private bool DrawModernToggle(bool value, string label, params GUILayoutOption[] options)
@@ -571,6 +638,55 @@ namespace StudioCharaEditor
             GUI.Label(gripRect, "///", resizeGripStyle);
         }
 
+        private void DrawSelectorResizeGrip()
+        {
+            EnsureResizeGripStyle();
+
+            Rect gripRect = new Rect(
+                selectorWindowRect.width - ResizeGripSize - 4f,
+                selectorWindowRect.height - ResizeGripSize - 4f,
+                ResizeGripSize,
+                ResizeGripSize);
+            int controlId = GUIUtility.GetControlID("StudioCharaEditorSelectorResizeGrip".GetHashCode(), FocusType.Passive, gripRect);
+            Event evt = Event.current;
+
+            switch (evt.GetTypeForControl(controlId))
+            {
+                case EventType.MouseDown:
+                    if (evt.button == 0 && gripRect.Contains(evt.mousePosition))
+                    {
+                        resizingSelectorWindow = true;
+                        selectorResizeStartMouse = evt.mousePosition;
+                        selectorResizeStartSize = new Vector2(selectorWindowRect.width, selectorWindowRect.height);
+                        GUIUtility.hotControl = controlId;
+                        evt.Use();
+                    }
+                    break;
+                case EventType.MouseDrag:
+                    if (resizingSelectorWindow && GUIUtility.hotControl == controlId)
+                    {
+                        Vector2 delta = evt.mousePosition - selectorResizeStartMouse;
+                        selectorWindowRect.width = Math.Max(SelectorMinWindowWidth, selectorResizeStartSize.x + delta.x);
+                        selectorWindowRect.height = Math.Max(SelectorMinWindowHeight, selectorResizeStartSize.y + delta.y);
+                        selectorWindowHasUserSize = true;
+                        selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
+                        selectorRenderRangePool.Clear();
+                        evt.Use();
+                    }
+                    break;
+                case EventType.MouseUp:
+                    if (GUIUtility.hotControl == controlId)
+                    {
+                        resizingSelectorWindow = false;
+                        GUIUtility.hotControl = 0;
+                        evt.Use();
+                    }
+                    break;
+            }
+
+            GUI.Label(gripRect, "///", resizeGripStyle);
+        }
+
         private void OnGUI()
         {
             if (VisibleGUI)
@@ -588,10 +704,12 @@ namespace StudioCharaEditor
                     {
                         windowStyle = new GUIStyle(GUI.skin.window);
                     }
+                    Rect previousWindowRect = windowRect;
                     windowRect = GUI.Window(windowID, windowRect, new GUI.WindowFunction(FuncWindowGUI), windowTitle, windowStyle);
                     if (selectorSidePanel != null)
                     {
-                        AlignSelectorWindow();
+                        FollowSelectorWindowMainMove(previousWindowRect);
+                        ClampSelectorWindowToScreen();
                         selectorWindowRect = GUI.Window(selectorWindowID, selectorWindowRect, new GUI.WindowFunction(FuncSelectorWindowGUI), LC("Select item"), windowStyle);
                     }
 
@@ -614,10 +732,15 @@ namespace StudioCharaEditor
             }
         }
 
-        private void AlignSelectorWindow()
+        private void PlaceSelectorWindowNearMain()
         {
-            float width = Math.Min(SelectorPanelWidth, Math.Max(320f, Screen.width - 8f));
-            float height = Math.Max(MinWindowHeight, windowRect.height);
+            float width = selectorWindowHasUserSize
+                ? selectorWindowRect.width
+                : SelectorPanelWidth;
+            float height = selectorWindowHasUserSize
+                ? selectorWindowRect.height
+                : SelectorPanelDefaultHeight;
+
             float x = windowRect.xMax + SelectorPanelGap;
             if (x + width > Screen.width - 4f)
             {
@@ -629,6 +752,29 @@ namespace StudioCharaEditor
             }
 
             selectorWindowRect = new Rect(x, windowRect.y, width, height);
+            ClampSelectorWindowToScreen();
+        }
+
+        private void FollowSelectorWindowMainMove(Rect previousMainRect)
+        {
+            Vector2 delta = new Vector2(windowRect.x - previousMainRect.x, windowRect.y - previousMainRect.y);
+            if (delta.sqrMagnitude <= 0.01f)
+            {
+                return;
+            }
+
+            selectorWindowRect.x += delta.x;
+            selectorWindowRect.y += delta.y;
+        }
+
+        private void ClampSelectorWindowToScreen()
+        {
+            float maxWidth = Math.Max(SelectorMinWindowWidth, Screen.width - 8f);
+            float maxHeight = Math.Max(SelectorMinWindowHeight, Screen.height - 8f);
+            selectorWindowRect.width = Mathf.Clamp(selectorWindowRect.width, SelectorMinWindowWidth, maxWidth);
+            selectorWindowRect.height = Mathf.Clamp(selectorWindowRect.height, SelectorMinWindowHeight, maxHeight);
+            selectorWindowRect.x = Mathf.Clamp(selectorWindowRect.x, 4f, Math.Max(4f, Screen.width - selectorWindowRect.width - 4f));
+            selectorWindowRect.y = Mathf.Clamp(selectorWindowRect.y, 4f, Math.Max(4f, Screen.height - selectorWindowRect.height - 4f));
         }
 
         private void Update()
@@ -795,7 +941,8 @@ namespace StudioCharaEditor
             Vector2 scrollPosition,
             float rowHeight,
             int showBefore,
-            int showAfter)
+            int showAfter,
+            int maxRows = MaxSelectorRowsPerFrame)
         {
             if (!selectorRenderRangePool.TryGetValue(selectorKey, out SelectorRenderRange range))
             {
@@ -811,7 +958,7 @@ namespace StudioCharaEditor
                     ? Math.Max(0, (int)(scrollPosition.y / rowHeight) - showBefore)
                     : 0;
                 int requestedRows = Math.Max(1, showBefore + showAfter + 2);
-                int rowsToDraw = Math.Min(MaxSelectorRowsPerFrame, requestedRows);
+                int rowsToDraw = Math.Min(Math.Max(1, maxRows), requestedRows);
                 int lastVisible = Math.Min(filteredCount - 1, firstVisible + rowsToDraw - 1);
 
                 range.FirstVisible = filteredCount > 0 ? firstVisible : 0;
@@ -936,6 +1083,10 @@ namespace StudioCharaEditor
 
                 HandleSelectorContextMenuOutsideClick();
                 DrawSelectorSidePanel(selectorSidePanel);
+                DrawSelectorResizeGrip();
+                DrawSelectorTooltip();
+                DrawSelectorCloseButton();
+                GUI.DragWindow(new Rect(0f, 0f, Math.Max(0f, selectorWindowRect.width - 28f), 24f));
             }
             catch (Exception ex)
             {
@@ -962,9 +1113,9 @@ namespace StudioCharaEditor
             GUILayout.Label(LC(panel.Name), GUILayout.Width(namew));
             GUILayout.Label(string.Format("#{0}: {1}", selectedId, selectedName));
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("X", GUILayout.Width(25)))
+            if (panel.ThumbList)
             {
-                CloseSelectorSidePanel();
+                DrawSelectorViewModeButton(panel);
             }
             GUILayout.EndHorizontal();
 
@@ -976,11 +1127,13 @@ namespace StudioCharaEditor
                 if (!string.Equals(newSearch, panel.SearchText))
                 {
                     panel.SearchText = newSearch;
+                    selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
                     ClearSelectorRuntimeCache(selectorKey);
                 }
                 if (GUILayout.Button("X", GUILayout.Width(25)))
                 {
                     panel.SearchText = string.Empty;
+                    selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
                     ClearSelectorRuntimeCache(selectorKey);
                 }
                 GUILayout.EndHorizontal();
@@ -993,14 +1146,18 @@ namespace StudioCharaEditor
             SelectorSearchState searchState = inSearching ? GetSelectorSearchState(selectorFilterKey, infoList, folderIndices, panel.SearchText) : null;
             List<int> filteredIndices = inSearching ? searchState?.Matches : folderIndices;
             int filteredCount = filteredIndices?.Count ?? infoList.Count;
-            float rowHeight = panel.ThumbList ? SelectorPanelThumbSize + ThumbListRowGap : 24f;
+            bool gridMode = panel.ThumbList && panel.ViewMode == SelectorViewMode.Grid;
+            int gridColumns = gridMode ? GetSelectorGridColumnCount(panel) : 1;
+            int rangeCount = gridMode ? GetSelectorGridRowCount(filteredCount, gridColumns) : filteredCount;
+            float rowHeight = gridMode ? SelectorGridCellHeight + SelectorGridGap : (panel.ThumbList ? SelectorPanelThumbSize + ThumbListRowGap : 24f);
             int showBefore = 1;
             int showAfter = Math.Max(4, (int)Math.Ceiling((selectorWindowRect.height - 112f) / rowHeight) + 2);
             int selectedVisibleIndex = GetSelectorVisibleIndex(selectedIndex, filteredIndices);
+            int selectedScrollIndex = gridMode && selectedVisibleIndex >= 0 ? selectedVisibleIndex / gridColumns : selectedVisibleIndex;
             if (panel.PendingScrollToSelected)
             {
-                panel.Scroll = selectedVisibleIndex >= 0
-                    ? new Vector2(0f, Math.Max(0, selectedVisibleIndex) * rowHeight + ThumbListRowGap)
+                panel.Scroll = selectedScrollIndex >= 0
+                    ? new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap)
                     : Vector2.zero;
                 panel.PendingScrollToSelected = false;
             }
@@ -1009,9 +1166,19 @@ namespace StudioCharaEditor
             GUILayout.BeginVertical();
             Vector2 oldScroll = panel.Scroll;
             panel.Scroll = GUILayout.BeginScrollView(panel.Scroll, GUI.skin.box, GUILayout.ExpandHeight(true));
-            if (panel.ThumbList)
+            if (gridMode)
             {
-                SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey, infoList, inSearching, panel.SearchText, filteredCount, panel.Scroll, rowHeight, showBefore, showAfter);
+                int maxGridRows = Math.Max(1, MaxSelectorGridCellsPerFrame / Math.Max(1, gridColumns));
+                SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey + "|grid|" + gridColumns, infoList, inSearching, panel.SearchText, rangeCount, panel.Scroll, rowHeight, showBefore, showAfter, maxGridRows);
+                DrawSelectorSideGrid(panel, infoList, filteredIndices, selectedId, filteredCount, range, gridColumns);
+                if (inSearching && searchState != null && !searchState.Complete)
+                {
+                    GUILayout.Label(LC("Searching") + "...", GUI.skin.box);
+                }
+            }
+            else if (panel.ThumbList)
+            {
+                SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey + "|list", infoList, inSearching, panel.SearchText, rangeCount, panel.Scroll, rowHeight, showBefore, showAfter);
                 int firstVisible = range.FirstVisible;
                 int lastVisible = range.LastVisible;
 
@@ -1052,7 +1219,7 @@ namespace StudioCharaEditor
             }
             else
             {
-                SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey, infoList, false, null, filteredCount, panel.Scroll, rowHeight, 0, MaxSelectorRowsPerFrame - 1);
+                SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey + "|text", infoList, false, null, rangeCount, panel.Scroll, rowHeight, 0, MaxSelectorRowsPerFrame - 1);
                 if (range.FirstVisible > 0)
                 {
                     GUILayout.Space(range.FirstVisible * rowHeight);
@@ -1087,15 +1254,267 @@ namespace StudioCharaEditor
             GUILayout.EndScrollView();
             TrackSelectorScroll(oldScroll, panel.Scroll);
 
-            if (selectedVisibleIndex >= 0 && GUILayout.Button(LC("Scroll to selected")))
+            if (selectedScrollIndex >= 0 && GUILayout.Button(LC("Scroll to selected")))
             {
-                panel.Scroll = new Vector2(0f, Math.Max(0, selectedVisibleIndex) * rowHeight + ThumbListRowGap);
+                panel.Scroll = new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap);
             }
             GUILayout.EndVertical();
             DrawSelectorFolderPanel(panel, infoList);
             GUILayout.EndHorizontal();
             GUI.enabled = oldGuiEnabled;
             DrawSelectorContextMenu(panel);
+        }
+
+        private void DrawSelectorTooltip()
+        {
+            if (Event.current.type != EventType.Repaint || string.IsNullOrEmpty(GUI.tooltip))
+            {
+                return;
+            }
+
+            GUIStyle style = GetSelectorTooltipStyle();
+            GUIContent content = new GUIContent(GUI.tooltip);
+            float width = Mathf.Clamp(style.CalcSize(content).x, 140f, Math.Min(360f, selectorWindowRect.width - 16f));
+            float height = Mathf.Clamp(style.CalcHeight(content, width), 24f, 96f);
+            Vector2 mouse = Event.current.mousePosition;
+            Rect rect = new Rect(mouse.x + 14f, mouse.y + 18f, width, height);
+            if (rect.xMax > selectorWindowRect.width - 8f)
+            {
+                rect.x = Math.Max(8f, selectorWindowRect.width - rect.width - 8f);
+            }
+            if (rect.yMax > selectorWindowRect.height - 8f)
+            {
+                rect.y = Math.Max(28f, mouse.y - rect.height - 10f);
+            }
+
+            GUI.Box(rect, content, style);
+        }
+
+        private void DrawSelectorCloseButton()
+        {
+            Rect cbRect = new Rect(selectorWindowRect.width - 18f, 3f, 14f, 14f);
+            if (GUI.Button(cbRect, string.Empty, closeButtonStyle ?? GUI.skin.button))
+            {
+                CloseSelectorSidePanel();
+            }
+        }
+
+        private void DrawSelectorViewModeButton(SelectorSidePanel panel)
+        {
+            Rect rect = GUILayoutUtility.GetRect(28f, 22f, GUILayout.Width(28f), GUILayout.Height(22f));
+            SelectorViewMode nextMode = panel.ViewMode == SelectorViewMode.Grid ? SelectorViewMode.List : SelectorViewMode.Grid;
+            string tooltip = nextMode == SelectorViewMode.Grid ? LC("Grid") : LC("List");
+            if (GUI.Button(rect, new GUIContent(string.Empty, tooltip)))
+            {
+                panel.ViewMode = nextMode;
+                selectorDefaultViewMode = nextMode;
+                panel.PendingScrollToSelected = true;
+                selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
+                ClearSelectorRuntimeCache(panel.SelectorKey);
+            }
+
+            if (Event.current.type == EventType.Repaint)
+            {
+                DrawSelectorViewModeIcon(rect, panel.ViewMode, true);
+            }
+        }
+
+        private void DrawSelectorViewModeIcon(Rect rect, SelectorViewMode mode, bool selected)
+        {
+            Color oldColor = GUI.color;
+            GUI.color = selected ? Color.white : new Color(0.75f, 0.82f, 0.86f, 0.95f);
+            if (mode == SelectorViewMode.Grid)
+            {
+                float size = 3.5f;
+                float gap = 2.5f;
+                float total = size * 3f + gap * 2f;
+                float startX = rect.x + (rect.width - total) * 0.5f;
+                float startY = rect.y + (rect.height - total) * 0.5f;
+                for (int y = 0; y < 3; y++)
+                {
+                    for (int x = 0; x < 3; x++)
+                    {
+                        GUI.DrawTexture(new Rect(startX + x * (size + gap), startY + y * (size + gap), size, size), Texture2D.whiteTexture);
+                    }
+                }
+            }
+            else
+            {
+                float lineWidth = 14f;
+                float lineHeight = 2f;
+                float startX = rect.x + (rect.width - lineWidth) * 0.5f;
+                float startY = rect.y + (rect.height - 12f) * 0.5f;
+                for (int i = 0; i < 3; i++)
+                {
+                    GUI.DrawTexture(new Rect(startX, startY + i * 5f, lineWidth, lineHeight), Texture2D.whiteTexture);
+                }
+            }
+            GUI.color = oldColor;
+        }
+
+        private void DrawSelectorSideGrid(
+            SelectorSidePanel panel,
+            List<CustomSelectInfo> infoList,
+            List<int> filteredIndices,
+            int selectedId,
+            int filteredItemCount,
+            SelectorRenderRange range,
+            int columns)
+        {
+            if (range == null || filteredItemCount <= 0 || columns <= 0)
+            {
+                return;
+            }
+
+            float rowHeight = SelectorGridCellHeight + SelectorGridGap;
+            float cellWidth = GetSelectorGridCellWidth(panel, columns);
+            if (range.FirstVisible > 0)
+            {
+                GUILayout.Space(range.FirstVisible * rowHeight);
+            }
+
+            int lastDrawn = range.FirstVisible - 1;
+            for (int row = range.FirstVisible; row <= range.LastVisible; row++)
+            {
+                GUILayout.BeginHorizontal(GUILayout.Height(rowHeight));
+                for (int column = 0; column < columns; column++)
+                {
+                    int visibleIndex = row * columns + column;
+                    if (visibleIndex >= filteredItemCount)
+                    {
+                        GUILayout.Space(cellWidth);
+                        continue;
+                    }
+
+                    int infoIndex = filteredIndices != null ? filteredIndices[visibleIndex] : visibleIndex;
+                    if (infoIndex >= 0 && infoIndex < infoList.Count)
+                    {
+                        DrawSelectorSideGridCell(panel, infoList[infoIndex], selectedId, cellWidth, SelectorGridCellHeight);
+                    }
+                    else
+                    {
+                        GUILayout.Space(cellWidth);
+                    }
+
+                    if (column < columns - 1)
+                    {
+                        GUILayout.Space(SelectorGridGap);
+                    }
+                }
+                GUILayout.FlexibleSpace();
+                GUILayout.EndHorizontal();
+                lastDrawn = row;
+            }
+
+            int totalRows = GetSelectorGridRowCount(filteredItemCount, columns);
+            int trailingRows = totalRows - lastDrawn - 1;
+            if (trailingRows > 0)
+            {
+                GUILayout.Space(trailingRows * rowHeight);
+            }
+        }
+
+        private void DrawSelectorSideGridCell(SelectorSidePanel panel, CustomSelectInfo info, int selectedId, float cellWidth, float cellHeight)
+        {
+            Rect cellRect = GUILayoutUtility.GetRect(cellWidth, cellHeight, GUILayout.Width(cellWidth), GUILayout.Height(cellHeight));
+            bool selected = info.id == selectedId;
+            bool hover = cellRect.Contains(Event.current.mousePosition);
+            Rect favoriteRect = new Rect(cellRect.xMax - 32f, cellRect.y + 4f, 28f, 22f);
+            string displayName = GetSelectorDisplayName(info);
+            GUIContent tooltipContent = new GUIContent(string.Empty, string.Format("#{0}: {1}", info.id, displayName));
+            GUI.Label(cellRect, tooltipContent, GUIStyle.none);
+
+            Event evt = Event.current;
+            if (GUI.enabled && evt.type == EventType.MouseDown && evt.button == 0 && favoriteRect.Contains(evt.mousePosition))
+            {
+                OpenSelectorItemContextMenu(panel, info);
+                evt.Use();
+                return;
+            }
+
+            if (GUI.enabled && evt.type == EventType.MouseDown && evt.button == 0 && cellRect.Contains(evt.mousePosition))
+            {
+                ChangeSelectorSidePanelId(panel, info.id);
+                evt.Use();
+                return;
+            }
+
+            if (GUI.enabled && evt.type == EventType.MouseDown && evt.button == 1 && cellRect.Contains(evt.mousePosition))
+            {
+                OpenSelectorItemContextMenu(panel, info);
+                evt.Use();
+                return;
+            }
+
+            if (evt.type != EventType.Repaint)
+            {
+                return;
+            }
+
+            GUI.skin.button.Draw(cellRect, tooltipContent, hover, false, selected, false);
+
+            Texture2D texture = GetSelectorThumbTexture(panel.Name, info);
+            if (texture == null)
+            {
+                texture = Texture2D.blackTexture;
+            }
+            Rect thumbRect = new Rect(
+                cellRect.x + (cellRect.width - SelectorGridThumbSize) * 0.5f,
+                cellRect.y + 5f,
+                SelectorGridThumbSize,
+                SelectorGridThumbSize);
+            GUI.DrawTexture(thumbRect, texture, ScaleMode.ScaleToFit, true);
+
+            Rect labelRect = new Rect(
+                cellRect.x + 4f,
+                thumbRect.yMax + 2f,
+                cellRect.width - 8f,
+                Math.Max(20f, cellRect.yMax - thumbRect.yMax - 8f));
+            GUI.Label(labelRect, displayName, GetSelectorGridLabelStyle());
+
+            bool favorite = IsSelectorFavorite(panel.SelectorKey, info);
+            Color oldColor = GUI.color;
+            GUI.color = favorite
+                ? new Color(0.92f, 0.78f, 0.22f, 1f)
+                : new Color(0.08f, 0.10f, 0.12f, 1f);
+            GUI.DrawTexture(favoriteRect, Texture2D.whiteTexture);
+            GUI.color = Color.white;
+            GUI.skin.button.Draw(favoriteRect, new GUIContent(favorite ? "F" : "+", LC("Add to folder")), favoriteRect.Contains(evt.mousePosition), false, favorite, false);
+            GUI.color = oldColor;
+        }
+
+        private int GetSelectorGridColumnCount(SelectorSidePanel panel)
+        {
+            float contentWidth = GetSelectorGridContentWidth(panel);
+            return Math.Max(1, (int)Math.Floor((contentWidth + SelectorGridGap) / (SelectorGridMinCellWidth + SelectorGridGap)));
+        }
+
+        private float GetSelectorGridCellWidth(SelectorSidePanel panel, int columns)
+        {
+            columns = Math.Max(1, columns);
+            float contentWidth = GetSelectorGridContentWidth(panel);
+            return Math.Max(SelectorGridMinCellWidth, (contentWidth - (columns - 1) * SelectorGridGap) / columns);
+        }
+
+        private float GetSelectorGridContentWidth(SelectorSidePanel panel)
+        {
+            float width = selectorWindowRect.width - 44f;
+            if (panel?.ThumbList == true)
+            {
+                width -= SelectorFolderWidth + 12f;
+            }
+
+            return Math.Max(SelectorGridMinCellWidth, width);
+        }
+
+        private static int GetSelectorGridRowCount(int itemCount, int columns)
+        {
+            if (itemCount <= 0)
+            {
+                return 0;
+            }
+
+            return (itemCount + Math.Max(1, columns) - 1) / Math.Max(1, columns);
         }
 
         private void DrawSelectorFolderPanel(SelectorSidePanel panel, List<CustomSelectInfo> infoList)
@@ -1145,6 +1564,7 @@ namespace StudioCharaEditor
             panel.SelectedFolderKey = folderKey;
             panel.PendingScrollToSelected = true;
             panel.Scroll = Vector2.zero;
+            selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
             selectorRenderRangePool.Clear();
         }
 
@@ -1191,7 +1611,13 @@ namespace StudioCharaEditor
             panel.Folders.Add(favoritesFolder);
 
             string scope = GetSelectorFavoriteScope(panel.SelectorKey);
-            foreach (SelectorCustomFolder customFolder in GetCustomFolders(scope).OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase))
+            List<SelectorCustomFolder> customFolders = GetCustomFolders(scope)
+                .OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            List<string> selectorItemKeys = customFolders.Any(folder => folder.ItemKeys.Any(IsStrictSelectorItemKey))
+                ? BuildSelectorItemKeys(panel.ChaCtrl, infoList)
+                : null;
+            foreach (SelectorCustomFolder customFolder in customFolders)
             {
                 SelectorFolderInfo folderInfo = new SelectorFolderInfo
                 {
@@ -1201,7 +1627,7 @@ namespace StudioCharaEditor
 
                 for (int i = 0; i < infoCount; i++)
                 {
-                    if (SelectorFolderContainsItem(customFolder, panel.ChaCtrl, infoList[i]))
+                    if (SelectorFolderContainsItem(customFolder, panel.ChaCtrl, infoList[i], selectorItemKeys?[i]))
                     {
                         folderInfo.Count++;
                         folderInfo.Indices.Add(i);
@@ -1215,6 +1641,116 @@ namespace StudioCharaEditor
             {
                 panel.SelectedFolderKey = SelectorFolderAllKey;
             }
+        }
+
+        private static List<string> BuildSelectorItemKeys(ChaControl chaCtrl, List<CustomSelectInfo> infoList)
+        {
+            List<string> itemKeys = new List<string>(infoList?.Count ?? 0);
+            if (infoList == null)
+            {
+                return itemKeys;
+            }
+
+            for (int i = 0; i < infoList.Count; i++)
+            {
+                itemKeys.Add(GetSelectorItemKey(chaCtrl, infoList[i]));
+            }
+
+            return itemKeys;
+        }
+
+        private void MigrateSelectorCustomFolderKeys(SelectorSidePanel panel, List<CustomSelectInfo> infoList)
+        {
+            if (panel == null || infoList == null || infoList.Count == 0)
+            {
+                return;
+            }
+
+            string scope = GetSelectorFavoriteScope(panel.SelectorKey);
+            bool changed = false;
+            foreach (SelectorCustomFolder folder in GetCustomFolders(scope))
+            {
+                changed |= MigrateSelectorCustomFolderKeys(folder, panel.ChaCtrl, infoList);
+            }
+
+            if (!changed)
+            {
+                return;
+            }
+
+            selectorCustomFolderVersion++;
+            panel.FolderInfoCount = -1;
+            selectorRenderRangePool.Clear();
+            selectorSearchPool.Clear();
+            SaveSelectorCustomFolders();
+        }
+
+        private static bool MigrateSelectorCustomFolderKeys(SelectorCustomFolder folder, ChaControl chaCtrl, List<CustomSelectInfo> infoList)
+        {
+            if (folder == null || infoList == null || infoList.Count == 0)
+            {
+                return false;
+            }
+
+            bool changed = false;
+            foreach (string storedKey in folder.ItemKeys.ToList())
+            {
+                if (string.IsNullOrEmpty(storedKey) || storedKey.StartsWith(SelectorItemKeyVersion + "|", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                List<string> strictMatches = GetStrictKeysMatchingStoredKey(storedKey, chaCtrl, infoList);
+                if (strictMatches.Count == 1)
+                {
+                    folder.ItemKeys.Remove(storedKey);
+                    folder.ItemKeys.Add(strictMatches[0]);
+                    changed = true;
+                }
+            }
+
+            foreach (int legacyId in folder.LegacyItemIds.ToList())
+            {
+                List<string> strictMatches = infoList
+                    .Where(info => info != null && info.id == legacyId)
+                    .Select(info => GetSelectorItemKey(chaCtrl, info))
+                    .Where(key => !string.IsNullOrEmpty(key))
+                    .Distinct(StringComparer.Ordinal)
+                    .Take(2)
+                    .ToList();
+
+                if (strictMatches.Count == 1)
+                {
+                    folder.LegacyItemIds.Remove(legacyId);
+                    folder.ItemKeys.Add(strictMatches[0]);
+                    changed = true;
+                }
+            }
+
+            return changed;
+        }
+
+        private static List<string> GetStrictKeysMatchingStoredKey(string storedKey, ChaControl chaCtrl, List<CustomSelectInfo> infoList)
+        {
+            List<string> matches = new List<string>();
+            for (int i = 0; i < infoList.Count; i++)
+            {
+                CustomSelectInfo info = infoList[i];
+                if (SelectorItemKeyMatches(storedKey, chaCtrl, info))
+                {
+                    string strictKey = GetSelectorItemKey(chaCtrl, info);
+                    if (!string.IsNullOrEmpty(strictKey) && !matches.Contains(strictKey))
+                    {
+                        matches.Add(strictKey);
+                        if (matches.Count > 1)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return matches;
         }
 
         private List<int> GetSelectedFolderIndices(SelectorSidePanel panel)
@@ -1260,10 +1796,10 @@ namespace StudioCharaEditor
                 GUI.color = Color.yellow;
             }
 
-            GUIContent content = new GUIContent(favorite ? "F" : "+", favorite ? "Remove favorite" : "Add favorite");
+            GUIContent content = new GUIContent(favorite ? "F" : "+", LC("Add to folder"));
             if (GUILayout.Button(content, GUILayout.Width(SelectorFavoriteButtonWidth), GUILayout.Height(height)))
             {
-                ToggleSelectorFavorite(panel, info);
+                OpenSelectorItemContextMenu(panel, info);
             }
 
             GUI.color = oldColor;
@@ -1272,7 +1808,7 @@ namespace StudioCharaEditor
         private bool IsSelectorFavorite(string selectorKey, CustomSelectInfo info)
         {
             EnsureSelectorFavoritesLoaded();
-            return info != null && selectorFavoriteKeys.Contains(GetSelectorFavoriteKey(selectorKey, info.id));
+            return info != null && selectorFavoriteKeys.Contains(GetSelectorFavoriteKey(selectorKey, info));
         }
 
         private void ToggleSelectorFavorite(SelectorSidePanel panel, CustomSelectInfo info)
@@ -1283,7 +1819,7 @@ namespace StudioCharaEditor
             }
 
             EnsureSelectorFavoritesLoaded();
-            string key = GetSelectorFavoriteKey(panel.SelectorKey, info.id);
+            string key = GetSelectorFavoriteKey(panel.SelectorKey, info);
             if (!selectorFavoriteKeys.Add(key))
             {
                 selectorFavoriteKeys.Remove(key);
@@ -1296,9 +1832,15 @@ namespace StudioCharaEditor
             SaveSelectorFavorites();
         }
 
-        private static string GetSelectorFavoriteKey(string selectorKey, int id)
+        private static string GetSelectorFavoriteKey(string selectorKey, CustomSelectInfo info)
         {
-            return GetSelectorFavoriteScope(selectorKey) + "|" + id;
+            string scope = GetSelectorFavoriteScope(selectorKey);
+            if (info != null && info.id >= 1000)
+            {
+                return scope + "|mod|" + EncodeSelectorKeyPart(info.name);
+            }
+
+            return scope + "|" + (info != null ? info.id : 0);
         }
 
         private static string GetSelectorFavoriteScope(string selectorKey)
@@ -1410,6 +1952,10 @@ namespace StudioCharaEditor
         {
             Event evt = Event.current;
             bool containsMouse = rect.Contains(evt.mousePosition);
+            if (content != null && !string.IsNullOrEmpty(content.tooltip))
+            {
+                GUI.Label(rect, new GUIContent(string.Empty, content.tooltip), GUIStyle.none);
+            }
             if (evt.type == EventType.Repaint)
             {
                 GUI.skin.button.Draw(rect, content, containsMouse, false, isOn, false);
@@ -1585,6 +2131,8 @@ namespace StudioCharaEditor
                     {
                         folder.ItemKeys.Clear();
                         folder.LegacyItemIds.Clear();
+                        folder.HasLegacyItemKeys = false;
+                        folder.HasLegacyStrictItemKeys = false;
                         MarkSelectorCustomFoldersChanged(panel);
                         SaveSelectorCustomFolders();
                     }
@@ -1630,46 +2178,17 @@ namespace StudioCharaEditor
             string path = GetSelectorCustomFoldersPath();
             try
             {
-                if (!File.Exists(path))
+                if (File.Exists(path))
                 {
+                    LoadSelectorCustomFoldersXml(path);
                     return;
                 }
 
-                string[] lines = File.ReadAllLines(path);
-                for (int i = 0; i < lines.Length; i++)
+                string legacyPath = GetLegacySelectorCustomFoldersPath();
+                if (File.Exists(legacyPath))
                 {
-                    string line = lines[i];
-                    if (string.IsNullOrWhiteSpace(line))
-                    {
-                        continue;
-                    }
-
-                    string[] parts = line.Split('\t');
-                    if (parts.Length < 3)
-                    {
-                        continue;
-                    }
-
-                    string scope = DecodeSelectorFolderField(parts[1]);
-                    string name = NormalizeSelectorFolderName(DecodeSelectorFolderField(parts[2]));
-                    if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name))
-                    {
-                        continue;
-                    }
-
-                    SelectorCustomFolder folder = GetOrCreateSelectorCustomFolder(scope, name);
-                    if (parts[0] == "itemkey" && parts.Length >= 4)
-                    {
-                        string itemKey = DecodeSelectorFolderField(parts[3]);
-                        if (!string.IsNullOrEmpty(itemKey))
-                        {
-                            folder.ItemKeys.Add(itemKey);
-                        }
-                    }
-                    else if (parts[0] == "item" && parts.Length >= 4 && int.TryParse(parts[3], out int id))
-                    {
-                        folder.LegacyItemIds.Add(id);
-                    }
+                    LoadSelectorCustomFoldersLegacyText(legacyPath);
+                    SaveSelectorCustomFolders();
                 }
             }
             catch (Exception ex)
@@ -1681,30 +2200,125 @@ namespace StudioCharaEditor
             }
         }
 
+        private void LoadSelectorCustomFoldersXml(string path)
+        {
+            XDocument document = XDocument.Load(path);
+            XElement root = document.Root;
+            if (root == null)
+            {
+                return;
+            }
+
+            foreach (XElement scopeElement in root.Elements("scope"))
+            {
+                string scope = (string)scopeElement.Attribute("key") ?? string.Empty;
+                LoadSelectorCustomFolderElements(scopeElement.Elements("folder"), scope);
+            }
+
+            LoadSelectorCustomFolderElements(root.Elements("folder"), string.Empty);
+        }
+
+        private void LoadSelectorCustomFolderElements(IEnumerable<XElement> folderElements, string parentScope)
+        {
+            foreach (XElement folderElement in folderElements)
+            {
+                string scope = FirstNotEmpty((string)folderElement.Attribute("scope"), parentScope);
+                string name = NormalizeSelectorFolderName((string)folderElement.Attribute("name"));
+                if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                SelectorCustomFolder folder = GetOrCreateSelectorCustomFolder(scope, name);
+                foreach (XElement itemElement in folderElement.Elements("item"))
+                {
+                    string itemKey = (string)itemElement.Attribute("key");
+                    if (!string.IsNullOrEmpty(itemKey))
+                    {
+                        folder.ItemKeys.Add(itemKey);
+                    }
+                }
+
+                foreach (XElement legacyElement in folderElement.Elements("legacyItem"))
+                {
+                    if (int.TryParse((string)legacyElement.Attribute("id"), out int id))
+                    {
+                        folder.LegacyItemIds.Add(id);
+                    }
+                }
+
+                RefreshSelectorFolderLegacyFlag(folder);
+            }
+        }
+
+        private void LoadSelectorCustomFoldersLegacyText(string path)
+        {
+            string[] lines = File.ReadAllLines(path);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                string[] parts = line.Split('\t');
+                if (parts.Length < 3)
+                {
+                    continue;
+                }
+
+                string scope = DecodeSelectorFolderField(parts[1]);
+                string name = NormalizeSelectorFolderName(DecodeSelectorFolderField(parts[2]));
+                if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                SelectorCustomFolder folder = GetOrCreateSelectorCustomFolder(scope, name);
+                if (parts[0] == "itemkey" && parts.Length >= 4)
+                {
+                    string itemKey = DecodeSelectorFolderField(parts[3]);
+                    if (!string.IsNullOrEmpty(itemKey))
+                    {
+                        folder.ItemKeys.Add(itemKey);
+                    }
+                }
+                else if (parts[0] == "item" && parts.Length >= 4 && int.TryParse(parts[3], out int id))
+                {
+                    folder.LegacyItemIds.Add(id);
+                }
+
+                RefreshSelectorFolderLegacyFlag(folder);
+            }
+        }
+
         private void SaveSelectorCustomFolders()
         {
             try
             {
-                List<string> lines = new List<string>();
-                foreach (KeyValuePair<string, List<SelectorCustomFolder>> pair in selectorCustomFoldersByScope.OrderBy(pair => pair.Key))
-                {
-                    foreach (SelectorCustomFolder folder in pair.Value.OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase))
-                    {
-                        string scope = EncodeSelectorFolderField(pair.Key);
-                        string name = EncodeSelectorFolderField(folder.Name);
-                        lines.Add("folder\t" + scope + "\t" + name);
-                        foreach (string itemKey in folder.ItemKeys.OrderBy(key => key, StringComparer.Ordinal))
-                        {
-                            lines.Add("itemkey\t" + scope + "\t" + name + "\t" + EncodeSelectorFolderField(itemKey));
-                        }
-                        foreach (int id in folder.LegacyItemIds.OrderBy(id => id))
-                        {
-                            lines.Add("item\t" + scope + "\t" + name + "\t" + id);
-                        }
-                    }
-                }
+                string path = GetSelectorCustomFoldersPath();
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                XDocument document = new XDocument(
+                    new XDeclaration("1.0", "utf-8", null),
+                    new XElement(SelectorFoldersXmlRootName,
+                        new XAttribute("version", "1"),
+                        selectorCustomFoldersByScope
+                            .OrderBy(pair => pair.Key)
+                            .Select(pair => new XElement("scope",
+                                new XAttribute("key", pair.Key),
+                                pair.Value
+                                    .OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase)
+                                    .Select(folder => new XElement("folder",
+                                        new XAttribute("name", folder.Name),
+                                        folder.ItemKeys
+                                            .OrderBy(key => key, StringComparer.Ordinal)
+                                            .Select(key => new XElement("item", new XAttribute("key", key))),
+                                        folder.LegacyItemIds
+                                            .OrderBy(id => id)
+                                            .Select(id => new XElement("legacyItem", new XAttribute("id", id)))))))));
 
-                File.WriteAllLines(GetSelectorCustomFoldersPath(), lines.ToArray());
+                document.Save(path);
             }
             catch (Exception ex)
             {
@@ -1793,6 +2407,7 @@ namespace StudioCharaEditor
                 {
                     existing.LegacyItemIds.Add(id);
                 }
+                RefreshSelectorFolderLegacyFlag(existing);
                 GetCustomFolders(scope).Remove(folder);
             }
             else
@@ -1830,7 +2445,6 @@ namespace StudioCharaEditor
             if (panel != null)
             {
                 panel.FolderInfoCount = -1;
-                panel.PendingScrollToSelected = true;
             }
             selectorRenderRangePool.Clear();
             selectorSearchPool.Clear();
@@ -1838,12 +2452,42 @@ namespace StudioCharaEditor
 
         private static bool SelectorFolderContainsItem(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
         {
+            return SelectorFolderContainsItem(folder, chaCtrl, info, null);
+        }
+
+        private static bool SelectorFolderContainsItem(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info, string currentKey)
+        {
             if (folder == null || info == null)
             {
                 return false;
             }
 
-            return folder.ItemKeys.Any(key => SelectorItemKeyMatches(key, chaCtrl, info)) || folder.LegacyItemIds.Contains(info.id);
+            if (folder.LegacyItemIds.Contains(info.id))
+            {
+                return true;
+            }
+
+            if (currentKey == null)
+            {
+                currentKey = GetSelectorItemKey(chaCtrl, info);
+            }
+            if (!string.IsNullOrEmpty(currentKey) && folder.ItemKeys.Contains(currentKey))
+            {
+                return true;
+            }
+
+            if (folder.HasLegacyStrictItemKeys &&
+                folder.ItemKeys.Any(key => IsLegacyStrictSelectorItemKey(key) && SelectorStrictItemKeyMatches(key, info)))
+            {
+                return true;
+            }
+
+            if (!folder.HasLegacyItemKeys)
+            {
+                return false;
+            }
+
+            return folder.ItemKeys.Any(key => !IsStrictSelectorItemKey(key) && SelectorItemKeyMatches(key, chaCtrl, info));
         }
 
         private static void AddSelectorFolderItem(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
@@ -1856,6 +2500,7 @@ namespace StudioCharaEditor
             RemoveSelectorFolderItemKeys(folder, chaCtrl, info);
             folder.ItemKeys.Add(GetSelectorItemKey(chaCtrl, info));
             folder.LegacyItemIds.Remove(info.id);
+            RefreshSelectorFolderLegacyFlag(folder);
         }
 
         private static void RemoveSelectorFolderItem(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
@@ -1867,6 +2512,7 @@ namespace StudioCharaEditor
 
             RemoveSelectorFolderItemKeys(folder, chaCtrl, info);
             folder.LegacyItemIds.Remove(info.id);
+            RefreshSelectorFolderLegacyFlag(folder);
         }
 
         private static void RemoveSelectorFolderItemKeys(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
@@ -1876,11 +2522,35 @@ namespace StudioCharaEditor
                 return;
             }
 
-            List<string> keysToRemove = folder.ItemKeys.Where(key => SelectorItemKeyMatches(key, chaCtrl, info)).ToList();
+            HashSet<string> keysToRemoveSet = new HashSet<string>(StringComparer.Ordinal)
+            {
+                GetSelectorItemKey(chaCtrl, info)
+            };
+            foreach (string legacyKey in GetSelectorLegacyExactItemKeys(chaCtrl, info))
+            {
+                keysToRemoveSet.Add(legacyKey);
+            }
+
+            List<string> keysToRemove = folder.ItemKeys
+                .Where(key => keysToRemoveSet.Contains(key) || (IsStrictSelectorItemKey(key) && SelectorStrictItemKeyMatches(key, info)))
+                .ToList();
             for (int i = 0; i < keysToRemove.Count; i++)
             {
                 folder.ItemKeys.Remove(keysToRemove[i]);
             }
+            RefreshSelectorFolderLegacyFlag(folder);
+        }
+
+        private static void RefreshSelectorFolderLegacyFlag(SelectorCustomFolder folder)
+        {
+            if (folder == null)
+            {
+                return;
+            }
+
+            folder.HasLegacyItemKeys = folder.LegacyItemIds.Count > 0 ||
+                                       folder.ItemKeys.Any(key => !IsStrictSelectorItemKey(key));
+            folder.HasLegacyStrictItemKeys = folder.ItemKeys.Any(IsLegacyStrictSelectorItemKey);
         }
 
         private static string GetSelectorItemKey(ChaControl chaCtrl, CustomSelectInfo info)
@@ -1890,17 +2560,7 @@ namespace StudioCharaEditor
                 return string.Empty;
             }
 
-            string listInfoKey = GetSelectorListInfoKey(chaCtrl, info);
-            if (!string.IsNullOrEmpty(listInfoKey))
-            {
-                return listInfoKey;
-            }
-
-            return string.Join("|", new[]
-            {
-                info.category.ToString(),
-                info.id.ToString()
-            });
+            return GetSelectorStrictItemKey(chaCtrl, info);
         }
 
         private static bool SelectorItemKeyMatches(string storedKey, ChaControl chaCtrl, CustomSelectInfo info)
@@ -1915,22 +2575,190 @@ namespace StudioCharaEditor
                 return true;
             }
 
+            if (IsStrictSelectorItemKey(storedKey))
+            {
+                return SelectorStrictItemKeyMatches(storedKey, info);
+            }
+
+            foreach (string exactKey in GetSelectorLegacyExactItemKeys(chaCtrl, info))
+            {
+                if (string.Equals(storedKey, exactKey, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
             string[] parts = storedKey.Split('|');
             if (parts.Length < 2)
             {
                 return false;
             }
 
-            if (parts[0] == info.category.ToString() &&
-                parts[1] == info.id.ToString())
+            return SelectorLegacyAssetKeyMatches(parts, chaCtrl, info);
+        }
+
+        private static string GetSelectorStrictItemKey(ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (info == null) return string.Empty;
+
+            string idStr = info.id >= 1000 ? "mod" : info.id.ToString();
+
+            return string.Join("|", new[]
+            {
+                SelectorItemKeyVersion, // "v3"
+                info.category.ToString(),
+                idStr,
+                EncodeSelectorKeyPart(info.assetBundle),
+                EncodeSelectorKeyPart(info.assetName),
+                EncodeSelectorKeyPart(info.name)
+            });
+        }
+
+        private static bool IsStrictSelectorItemKey(string key)
+        {
+            return !string.IsNullOrEmpty(key) &&
+                   (key.StartsWith(SelectorItemKeyVersion + "|", StringComparison.Ordinal) ||
+                    key.StartsWith("v2|", StringComparison.Ordinal));
+        }
+
+        private static bool IsLegacyStrictSelectorItemKey(string key)
+        {
+            return !string.IsNullOrEmpty(key) && key.StartsWith("v2|", StringComparison.Ordinal);
+        }
+
+        private static bool SelectorStrictItemKeyMatches(string storedKey, CustomSelectInfo info)
+        {
+            if (info == null || string.IsNullOrEmpty(storedKey))
+            {
+                return false;
+            }
+
+            string[] parts = storedKey.Split('|');
+            if (parts.Length < 5 ||
+                (parts[0] != SelectorItemKeyVersion && parts[0] != "v2") ||
+                parts[1] != info.category.ToString())
+            {
+                return false;
+            }
+
+            string storedIdStr = parts[2];
+            string storedBundle = DecodeSelectorKeyPart(parts[3]);
+            string storedAsset = DecodeSelectorKeyPart(parts[4]);
+            string storedName = parts.Length >= 6 ? DecodeSelectorKeyPart(parts[5]) : string.Empty;
+
+            bool isSideloaderItem = info.id >= 1000;
+
+            int storedId = 0;
+            int.TryParse(storedIdStr, out storedId);
+            bool storedIsSideloader = storedIdStr == "mod" || storedId >= 1000;
+
+            if (isSideloaderItem || storedIsSideloader)
+            {
+                if (!string.IsNullOrEmpty(storedName) && !string.IsNullOrEmpty(info.name))
+                {
+                    if (SelectorOptionalValueMatches(storedName, info.name)) return true;
+                }
+
+                if (!string.IsNullOrEmpty(storedBundle) && !string.IsNullOrEmpty(info.assetBundle))
+                {
+                    return SelectorOptionalValueMatches(storedBundle, info.assetBundle) &&
+                           SelectorOptionalValueMatches(storedAsset, info.assetName);
+                }
+
+                return false;
+            }
+            else
+            {
+                if (storedIdStr != info.id.ToString())
+                {
+                    return false;
+                }
+
+                if (!SelectorOptionalValueMatches(storedBundle, info.assetBundle) ||
+                    !SelectorOptionalValueMatches(storedAsset, info.assetName))
+                {
+                    return false;
+                }
+
+                if (parts.Length >= 6)
+                {
+                    if (!SelectorOptionalValueMatches(storedName, info.name)) return false;
+                }
+
+                return true;
+            }
+        }
+
+        private static bool SelectorOptionalValueMatches(string storedValue, string currentValue)
+        {
+            string normalizedStored = NormalizeSelectorKeyValue(storedValue);
+            if (string.IsNullOrEmpty(normalizedStored))
             {
                 return true;
             }
 
-            return SelectorLegacyAssetKeyMatches(parts, chaCtrl, info);
+            return string.Equals(normalizedStored, NormalizeSelectorKeyValue(currentValue), StringComparison.Ordinal);
         }
 
-        private static string GetSelectorListInfoKey(ChaControl chaCtrl, CustomSelectInfo info)
+        private static IEnumerable<string> GetSelectorLegacyExactItemKeys(ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (info == null)
+            {
+                yield break;
+            }
+
+            yield return string.Join("|", new[]
+            {
+                info.category.ToString(),
+                info.id.ToString()
+            });
+
+            string directKey = GetSelectorLegacyDirectItemKey(info, false);
+            if (!string.IsNullOrEmpty(directKey))
+            {
+                yield return directKey;
+            }
+
+            string directNameKey = GetSelectorLegacyDirectItemKey(info, true);
+            if (!string.IsNullOrEmpty(directNameKey))
+            {
+                yield return directNameKey;
+            }
+
+            string listInfoKey = GetSelectorLegacyListInfoKey(chaCtrl, info);
+            if (!string.IsNullOrEmpty(listInfoKey))
+            {
+                yield return listInfoKey;
+            }
+        }
+
+        private static string GetSelectorLegacyDirectItemKey(CustomSelectInfo info, bool includeName)
+        {
+            if (info == null ||
+                (string.IsNullOrEmpty(info.assetBundle) &&
+                 string.IsNullOrEmpty(info.assetName) &&
+                 (!includeName || string.IsNullOrEmpty(info.name))))
+            {
+                return null;
+            }
+
+            List<string> parts = new List<string>
+            {
+                info.category.ToString(),
+                info.id.ToString(),
+                EncodeSelectorKeyPart(info.assetBundle),
+                EncodeSelectorKeyPart(info.assetName)
+            };
+
+            if (includeName)
+            {
+                parts.Add(EncodeSelectorKeyPart(info.name));
+            }
+
+            return string.Join("|", parts.ToArray());
+        }
+
+        private static string GetSelectorLegacyListInfoKey(ChaControl chaCtrl, CustomSelectInfo info)
         {
             ListInfoBase listInfo = TryGetSelectorListInfo(chaCtrl, info);
             if (listInfo == null)
@@ -2017,7 +2845,9 @@ namespace StudioCharaEditor
 
         private static bool SelectorLegacyAssetKeyMatches(string[] parts, ChaControl chaCtrl, CustomSelectInfo info)
         {
-            if (parts.Length < 4 || parts[0] != info.category.ToString())
+            if (parts.Length < 4 ||
+                parts[0] != info.category.ToString() ||
+                parts[1] != info.id.ToString())
             {
                 return false;
             }
@@ -2027,6 +2857,16 @@ namespace StudioCharaEditor
             if (string.IsNullOrEmpty(storedBundle) && string.IsNullOrEmpty(storedAsset))
             {
                 return false;
+            }
+
+            if (parts.Length >= 5)
+            {
+                string storedName = DecodeSelectorKeyPart(parts[4]);
+                if (!string.IsNullOrEmpty(storedName) &&
+                    !string.Equals(NormalizeSelectorKeyValue(storedName), NormalizeSelectorKeyValue(info.name), StringComparison.Ordinal))
+                {
+                    return false;
+                }
             }
 
             ListInfoBase listInfo = TryGetSelectorListInfo(chaCtrl, info);
@@ -2100,6 +2940,155 @@ namespace StudioCharaEditor
             return string.Empty;
         }
 
+        private string GetSelectorDisplayName(CustomSelectInfo info)
+        {
+            if (info == null)
+            {
+                return string.Empty;
+            }
+
+            string translated = GetSelectorTranslatedName(info.name);
+            return string.IsNullOrEmpty(translated) ? (info.name ?? string.Empty) : translated;
+        }
+
+        private string GetSelectorSearchText(CustomSelectInfo info)
+        {
+            if (info == null)
+            {
+                return string.Empty;
+            }
+
+            string translated = GetSelectorTranslatedName(info.name);
+            return string.Join(" ", new[]
+            {
+                info.id.ToString(),
+                info.name ?? string.Empty,
+                translated ?? string.Empty
+            });
+        }
+
+        private string GetSelectorTranslatedName(string sourceName)
+        {
+            if (string.IsNullOrEmpty(sourceName))
+            {
+                return string.Empty;
+            }
+
+            EnsureSelectorTranslationsLoaded();
+            string key = NormalizeSelectorTranslationKey(sourceName);
+            if (selectorTranslationLookupCache.TryGetValue(key, out string cached))
+            {
+                return cached;
+            }
+
+            if (selectorTranslationMap.TryGetValue(key, out string exact))
+            {
+                selectorTranslationLookupCache[key] = exact;
+                return exact;
+            }
+
+            selectorTranslationLookupCache[key] = string.Empty;
+            return string.Empty;
+        }
+
+        private void EnsureSelectorTranslationsLoaded()
+        {
+            if (selectorTranslationsLoaded)
+            {
+                return;
+            }
+
+            selectorTranslationsLoaded = true;
+            string textPath = Path.Combine(Paths.BepInExRootPath, "Translation", "en", "Text");
+            if (!Directory.Exists(textPath))
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(textPath, "*.txt", SearchOption.AllDirectories))
+                {
+                    foreach (string line in File.ReadLines(file))
+                    {
+                        AddSelectorTranslationLine(line);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger?.LogWarning("Failed to load XUnity translation cache for selector search: " + ex.Message);
+                }
+            }
+        }
+
+        private void AddSelectorTranslationLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith("//", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            int equalsIndex = line.IndexOf('=');
+            if (equalsIndex <= 0 || equalsIndex >= line.Length - 1)
+            {
+                return;
+            }
+
+            string source = CleanSelectorTranslationText(line.Substring(0, equalsIndex));
+            string translated = CleanSelectorTranslationText(line.Substring(equalsIndex + 1));
+            if (string.IsNullOrEmpty(source) ||
+                string.IsNullOrEmpty(translated) ||
+                string.Equals(source, translated, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            string key = NormalizeSelectorTranslationKey(source);
+            if (!selectorTranslationMap.ContainsKey(key))
+            {
+                selectorTranslationMap.Add(key, translated);
+            }
+        }
+
+        private static string CleanSelectorTranslationText(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            string cleaned = value.Replace("\\r", "\r").Replace("\\n", "\n");
+            cleaned = Regex.Replace(cleaned, @"#?\{\{[A-Z]\}\}:?", " ");
+            cleaned = Regex.Replace(cleaned, @"\s+", " ");
+            return cleaned.Trim();
+        }
+
+        private static string NormalizeSelectorTranslationKey(string value)
+        {
+            return CleanSelectorTranslationText(value).ToLowerInvariant();
+        }
+
+        private static bool ContainsNonAscii(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] > 127)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static string NormalizeSelectorFolderName(string rawName)
         {
             if (string.IsNullOrWhiteSpace(rawName))
@@ -2161,6 +3150,11 @@ namespace StudioCharaEditor
 
         private static string GetSelectorCustomFoldersPath()
         {
+            return Path.Combine(Paths.GameRootPath, "UserData", "save", "HS2StudioCharaEditorFolders.xml");
+        }
+
+        private static string GetLegacySelectorCustomFoldersPath()
+        {
             return Path.Combine(CharaEditorMgr.GetDllPath(), "HS2StudioCharaEditorFolders.txt");
         }
 
@@ -2175,7 +3169,8 @@ namespace StudioCharaEditor
             GUILayout.BeginHorizontal();
             DrawSelectorFavoriteButton(panel, info, SelectorPanelButtonHeight);
             Color buttonColor = GUI.color;
-            GUIContent content = new GUIContent(string.Format("#{0}:\n{1}", info.id, info.name));
+            string displayName = GetSelectorDisplayName(info);
+            GUIContent content = new GUIContent(string.Format("#{0}: {1}", info.id, displayName), string.Format("#{0}: {1}", info.id, displayName));
             Rect itemRect = GUILayoutUtility.GetRect(content, GUI.skin.button, GUILayout.Height(SelectorPanelButtonHeight), GUILayout.ExpandWidth(true));
             if (info.id == selectedId)
             {
@@ -2202,7 +3197,8 @@ namespace StudioCharaEditor
             GUILayout.BeginHorizontal();
             DrawSelectorFavoriteButton(panel, info, 20f);
             Color buttonColor = GUI.color;
-            GUIContent content = new GUIContent(string.Format("#{0}: {1}", info.id, info.name));
+            string displayName = GetSelectorDisplayName(info);
+            GUIContent content = new GUIContent(string.Format("#{0}: {1}", info.id, displayName), string.Format("#{0}: {1}", info.id, displayName));
             Rect itemRect = GUILayoutUtility.GetRect(content, GUI.skin.button, GUILayout.ExpandWidth(true));
             if (info.id == selectedId)
             {
@@ -2226,10 +3222,6 @@ namespace StudioCharaEditor
             int oldId = Convert.ToInt32(panel.DetailInfo.DetailDefine.Get(panel.ChaCtrl));
             if (id == oldId)
             {
-                if (StudioCharaEditor.CloseListAfterSelect.Value)
-                {
-                    CloseSelectorSidePanel();
-                }
                 return;
             }
 
@@ -2240,10 +3232,7 @@ namespace StudioCharaEditor
                 panel.DetailInfo.DetailDefine.Upd(panel.ChaCtrl);
             }
 
-            if (StudioCharaEditor.CloseListAfterSelect.Value)
-            {
-                CloseSelectorSidePanel();
-            }
+            panel.PendingScrollToSelected = false;
         }
 
         private void OpenSelectorSidePanel(ChaControl chaCtrl, string name, CharaDetailInfo dInfo, int selectedIndex, bool thumbList, float rowHeight)
@@ -2254,6 +3243,7 @@ namespace StudioCharaEditor
                 thumbPool[name] = new Dictionary<string, Texture2D>();
             }
 
+            PlaceSelectorWindowNearMain();
             selectorSidePanel = new SelectorSidePanel
             {
                 Name = name,
@@ -2261,6 +3251,7 @@ namespace StudioCharaEditor
                 ChaCtrl = chaCtrl,
                 DetailInfo = dInfo,
                 ThumbList = thumbList,
+                ViewMode = thumbList ? selectorDefaultViewMode : SelectorViewMode.List,
                 SearchText = string.Empty,
                 Scroll = new Vector2(0f, Math.Max(0, selectedIndex) * rowHeight + ThumbListRowGap),
                 PendingScrollToSelected = true
@@ -2285,6 +3276,7 @@ namespace StudioCharaEditor
         {
             selectorSidePanel = null;
             selectorContextMenu = null;
+            resizingSelectorWindow = false;
         }
 
         private void OnSelectChange(TreeNodeObject newSel)
@@ -2718,7 +3710,7 @@ namespace StudioCharaEditor
                             if (newSlotCount > 0)
                             {
                                 int need10 = (newSlotCount - 1) / 10 + 1;
-                                for (int i = 0; i < need10; i ++)
+                                for (int i = 0; i < need10; i++)
                                 {
                                     PluginMoreAccessories.AddTenAccessorySlots(cec.ociTarget.charInfo);
                                 }
@@ -3221,9 +4213,9 @@ namespace StudioCharaEditor
                     }
                 }
                 else if (GUILayout.Button("+", GUILayout.Width(25)))
-                    {
-                        OpenSelectorSidePanel(chaCtrl, name, dInfo, oldIndex, thumbList, thumbRowHeight);
-                    }
+                {
+                    OpenSelectorSidePanel(chaCtrl, name, dInfo, oldIndex, thumbList, thumbRowHeight);
+                }
                 if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
                     onChangeId((int)dInfo.RevertValue);
             }
@@ -4197,9 +5189,11 @@ namespace StudioCharaEditor
                 {
                     return Texture2D.blackTexture;
                 }
-                thumbPool[name][texKey] = CommonLib.LoadAsset<Texture2D>(info.assetBundle, info.assetName, false, "");
+                Texture2D loaded = CommonLib.LoadAsset<Texture2D>(info.assetBundle, info.assetName, false, "");
+                thumbPool[name][texKey] = loaded != null ? loaded : Texture2D.blackTexture;
             }
-            return thumbPool[name][texKey];
+
+            return thumbPool[name][texKey] != null ? thumbPool[name][texKey] : Texture2D.blackTexture;
         }
 
         private void TrackSelectorScroll(Vector2 oldScroll, Vector2 newScroll)
@@ -4236,7 +5230,14 @@ namespace StudioCharaEditor
                 return false;
             }
 
+            float now = Time.realtimeSinceStartup;
+            if (now < selectorNextThumbLoadTime)
+            {
+                return false;
+            }
+
             selectorThumbLoadsThisFrame++;
+            selectorNextThumbLoadTime = now + SelectorThumbLoadInterval;
             return true;
         }
 
@@ -4253,7 +5254,7 @@ namespace StudioCharaEditor
                 indexed >= 0 &&
                 indexed < infoList.Count)
             {
-                displayName = infoList[indexed].name;
+                displayName = GetSelectorDisplayName(infoList[indexed]);
                 return indexed;
             }
 
@@ -4261,7 +5262,7 @@ namespace StudioCharaEditor
             {
                 if (infoList[i].id == id)
                 {
-                    displayName = infoList[i].name;
+                    displayName = GetSelectorDisplayName(infoList[i]);
                     return i;
                 }
             }
@@ -4317,7 +5318,7 @@ namespace StudioCharaEditor
             }
         }
 
-        private static int GetFilteredSelectorCount(List<CustomSelectInfo> infoList, bool inSearching, string searchText)
+        private int GetFilteredSelectorCount(List<CustomSelectInfo> infoList, bool inSearching, string searchText)
         {
             if (!inSearching)
             {
@@ -4335,17 +5336,18 @@ namespace StudioCharaEditor
             return count;
         }
 
-        private static bool SelectorMatchesSearch(CustomSelectInfo info, bool inSearching, string searchText)
+        private bool SelectorMatchesSearch(CustomSelectInfo info, bool inSearching, string searchText)
         {
             if (!inSearching)
             {
                 return true;
             }
-            if (string.IsNullOrEmpty(info.name))
+            if (info == null || string.IsNullOrWhiteSpace(searchText))
             {
                 return false;
             }
-            return info.name.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
+
+            return GetSelectorSearchText(info).IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void SetSavingTexture(Texture2D texture)
