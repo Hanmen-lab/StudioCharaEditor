@@ -26,11 +26,11 @@ namespace StudioCharaEditor
 
         private static readonly Color TextColor = Rgba(232, 238, 241);
         private static readonly Color MutedTextColor = Rgba(174, 185, 191);
-        private static readonly Color WindowFill = Rgba(24, 27, 30, 244);
-        private static readonly Color PanelFill = Rgba(33, 37, 41, 238);
-        private static readonly Color FieldFill = Rgba(18, 20, 23, 242);
-        private static readonly Color Stroke = Rgba(70, 78, 84, 226);
-        private static readonly Color StrokeSoft = Rgba(58, 65, 71, 214);
+        private static readonly Color WindowFill = Rgba(24, 27, 30, 204);
+        private static readonly Color PanelFill = Rgba(33, 37, 41, 196);
+        private static readonly Color FieldFill = Rgba(18, 20, 23, 208);
+        private static readonly Color Stroke = Rgba(70, 78, 84, 196);
+        private static readonly Color StrokeSoft = Rgba(58, 65, 71, 176);
         private static readonly Color Accent = Rgba(42, 184, 154);
         private static readonly Color AccentHover = Rgba(55, 205, 175);
         private static readonly Color AccentActive = Rgba(30, 151, 128);
@@ -70,14 +70,14 @@ namespace StudioCharaEditor
                 Skin.font = themeFont;
             }
 
-            Texture2D windowTex = ThemeTexture("ui_window.png", 64, 64, WindowFill, Rgba(92, 103, 111, 235), 5, 1);
-            Texture2D panelTex = ThemeTexture("ui_panel.png", 64, 64, PanelFill, StrokeSoft, 3, 1);
-            Texture2D panelHoverTex = ThemeTexture("ui_panel_hover.png", 64, 64, Rgba(41, 46, 51, 240), Rgba(90, 102, 111, 226), 3, 1);
-            Texture2D fieldTex = ThemeTexture("ui_field.png", 48, 48, FieldFill, Stroke, 2, 1);
-            Texture2D fieldFocusTex = ThemeTexture("ui_field_focus.png", 48, 48, FieldFill, Accent, 2, 1);
-            Texture2D buttonTex = ThemeTexture("ui_button.png", 48, 48, Rgba(48, 55, 61, 242), Rgba(91, 103, 112, 228), 2, 1);
-            Texture2D buttonHoverTex = ThemeTexture("ui_button_hover.png", 48, 48, Rgba(58, 67, 74, 245), Rgba(117, 132, 142, 235), 2, 1);
-            Texture2D buttonActiveTex = ThemeTexture("ui_button_active.png", 48, 48, Rgba(35, 41, 46, 246), Accent, 2, 1);
+            Texture2D windowTex = ThemeTexture("ui_window.png", 64, 64, WindowFill, Rgba(92, 103, 111, 205), 5, 1, 0.80f);
+            Texture2D panelTex = ThemeTexture("ui_panel.png", 64, 64, PanelFill, StrokeSoft, 3, 1, 0.76f);
+            Texture2D panelHoverTex = ThemeTexture("ui_panel_hover.png", 64, 64, Rgba(41, 46, 51, 208), Rgba(90, 102, 111, 204), 3, 1, 0.82f);
+            Texture2D fieldTex = ThemeTexture("ui_field.png", 48, 48, FieldFill, Stroke, 2, 1, 0.82f);
+            Texture2D fieldFocusTex = ThemeTexture("ui_field_focus.png", 48, 48, FieldFill, Accent, 2, 1, 0.86f);
+            Texture2D buttonTex = ThemeTexture("ui_button.png", 48, 48, Rgba(48, 55, 61, 208), Rgba(91, 103, 112, 200), 2, 1, 0.82f);
+            Texture2D buttonHoverTex = ThemeTexture("ui_button_hover.png", 48, 48, Rgba(58, 67, 74, 222), Rgba(117, 132, 142, 212), 2, 1, 0.88f);
+            Texture2D buttonActiveTex = ThemeTexture("ui_button_active.png", 48, 48, Rgba(35, 41, 46, 232), Accent, 2, 1, 0.92f);
             Texture2D accentTex = ThemeTexture("ui_accent.png", 48, 48, Accent, AccentHover, 2, 1);
             Texture2D accentHoverTex = ThemeTexture("ui_accent_hover.png", 48, 48, AccentHover, Rgba(130, 242, 218), 2, 1);
             Texture2D accentActiveTex = ThemeTexture("ui_accent_active.png", 48, 48, AccentActive, AccentHover, 2, 1);
@@ -382,10 +382,31 @@ namespace StudioCharaEditor
             }
         }
 
-        private Texture2D ThemeTexture(string fileName, int width, int height, Color fill, Color border, int radius, int borderWidth)
+        private Texture2D ThemeTexture(string fileName, int width, int height, Color fill, Color border, int radius, int borderWidth, float embeddedOpacity = 1f)
         {
             Texture2D embedded = LoadEmbeddedTexture(fileName);
+            if (embedded != null)
+            {
+                ApplyEmbeddedOpacity(embedded, embeddedOpacity);
+            }
             return embedded ?? RoundedRectTexture(width, height, fill, border, radius, borderWidth);
+        }
+
+        private static void ApplyEmbeddedOpacity(Texture2D texture, float opacity)
+        {
+            if (texture == null || opacity >= 0.995f)
+            {
+                return;
+            }
+
+            opacity = Mathf.Clamp01(opacity);
+            Color[] pixels = texture.GetPixels();
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                pixels[i].a *= opacity;
+            }
+            texture.SetPixels(pixels);
+            texture.Apply(false, false);
         }
 
         private Font LoadEmbeddedFont(string fileName)

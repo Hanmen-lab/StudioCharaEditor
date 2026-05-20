@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.ConstrainedExecution;
+using System.Text;
 using UnityEngine;
 using static AIChara.ChaListDefine;
 
@@ -27,8 +28,10 @@ namespace StudioCharaEditor
         };
 
         private readonly int windowID = 10123;
+        private readonly int selectorWindowID = 10124;
         private readonly string windowTitle = "Studio Charactor Editor";
         internal Rect windowRect = new Rect(0f, 300f, 600f, 400f);
+        private Rect selectorWindowRect = new Rect(0f, 300f, 420f, 400f);
         private bool mouseInWindow = false;
 
         private TreeNodeObject lastSelectedTreeNode;
@@ -91,14 +94,37 @@ namespace StudioCharaEditor
         private const float MinWindowHeight = 400f;
         private const float ResizeGripSize = 22f;
         private const float ResizeGripReserve = 28f;
+        private const float SelectorPanelGap = 8f;
+        private const float SelectorPanelWidth = 540f;
+        private const float SelectorFolderWidth = 112f;
+        private const float SelectorFolderRowHeight = 24f;
+        private const float SelectorPanelThumbSize = 78f;
+        private const float SelectorPanelButtonHeight = 40f;
         private const float ThinSliderHeight = 20f;
         private const float ThinSliderTrackHeight = 2f;
         private const float ThinSliderThumbSize = 7f;
         private const float TimelineButtonWidth = 22f;
         private const float ColorDragApplyInterval = 0.06f;
         private const float SelectorSearchDelay = 0.25f;
-        private const int SelectorSearchBatchSize = 350;
+        private const int SelectorSearchBatchSize = 120;
+        private const int MaxSelectorRowsPerFrame = 20;
+        private const int MaxSelectorThumbLoadsPerFrame = 1;
+        private const float SelectorThumbLoadIdleDelay = 0.25f;
+        private const float SelectorScrollChangeEpsilon = 0.5f;
+        private const string SelectorFolderAllKey = "__all";
+        private const string SelectorFolderFavoritesKey = "__favorites";
+        private const string SelectorFolderCustomPrefix = "custom:";
+        private const float SelectorFavoriteButtonWidth = 24f;
         private readonly Dictionary<string, PendingColorChange> pendingColorChanges = new Dictionary<string, PendingColorChange>();
+        private readonly HashSet<string> selectorFavoriteKeys = new HashSet<string>();
+        private readonly Dictionary<string, List<SelectorCustomFolder>> selectorCustomFoldersByScope = new Dictionary<string, List<SelectorCustomFolder>>();
+        private int selectorThumbLoadFrame = -1;
+        private int selectorThumbLoadsThisFrame;
+        private float selectorThumbLoadPauseUntil;
+        private bool selectorFavoritesLoaded;
+        private bool selectorCustomFoldersLoaded;
+        private int selectorFavoriteVersion;
+        private int selectorCustomFolderVersion;
         private static readonly string[] HairSetKeys =
         {
             "Hair#BackHair",
@@ -156,6 +182,62 @@ namespace StudioCharaEditor
             public int LastBuildFrame = -1;
         }
 
+        private class SelectorSidePanel
+        {
+            public string Name;
+            public string SelectorKey;
+            public ChaControl ChaCtrl;
+            public CharaDetailInfo DetailInfo;
+            public Vector2 Scroll;
+            public Vector2 FolderScroll;
+            public string SearchText = string.Empty;
+            public string SelectedFolderKey = SelectorFolderAllKey;
+            public List<SelectorFolderInfo> Folders = new List<SelectorFolderInfo>();
+            public int FolderInfoCount = -1;
+            public int FolderFavoriteVersion = -1;
+            public int FolderCustomVersion = -1;
+            public bool ThumbList;
+            public bool PendingScrollToSelected;
+        }
+
+        private class SelectorFolderInfo
+        {
+            public string Key;
+            public string Name;
+            public int Count;
+            public List<int> Indices = new List<int>();
+        }
+
+        private class SelectorCustomFolder
+        {
+            public string Scope;
+            public string Name;
+            public HashSet<string> ItemKeys = new HashSet<string>();
+            public HashSet<int> LegacyItemIds = new HashSet<int>();
+        }
+
+        private enum SelectorContextMenuType
+        {
+            Item,
+            Folder,
+        }
+
+        private class SelectorContextMenu
+        {
+            public SelectorContextMenuType Type;
+            public Rect Rect;
+            public Vector2 Position;
+            public string Scope;
+            public string FolderKey;
+            public string FolderName;
+            public CustomSelectInfo Item;
+            public string NewFolderName = string.Empty;
+            public string RenameFolderName = string.Empty;
+        }
+
+        private SelectorSidePanel selectorSidePanel;
+        private SelectorContextMenu selectorContextMenu;
+
         // Localize
         public Dictionary<string, string> curLocalizationDict;
 
@@ -173,9 +255,8 @@ namespace StudioCharaEditor
             catelogIndex1 = 0;
             catelogIndex2 = new int[] { 1, 1, 2, 0, 0 };
             detailPageSelect = SelectMode.Normal;
+            CloseSelectorSidePanel();
             ClearSelectorCache();
-            selectorRenderRangePool.Clear();
-            selectorSearchPool.Clear();
         }
 
         private void Start()
@@ -334,6 +415,44 @@ namespace StudioCharaEditor
             return categoryLabel == label ? label : categoryLabel + " " + label;
         }
 
+        private void DrawAbmxTimelineButton(ChaControl chaCtrl, string name, string slideName, CharaDetailInfo dInfo, int subSliderIndex)
+        {
+            if (!PluginTimelineCompatibility.CanSelectAbmx(ociTarget, chaCtrl, dInfo, subSliderIndex))
+            {
+                return;
+            }
+
+            Color oldColor = GUI.color;
+            if (PluginTimelineCompatibility.IsSelectedAbmx(ociTarget, dInfo, subSliderIndex))
+            {
+                GUI.color = Color.cyan;
+            }
+
+            string displayName = GetAbmxTimelineDisplayName(name, slideName, dInfo);
+            if (GUILayout.Button(new GUIContent("T", "Timeline"), GUILayout.Width(TimelineButtonWidth)))
+            {
+                PluginTimelineCompatibility.SelectAbmxInterpolable(ociTarget, dInfo, displayName, subSliderIndex);
+            }
+
+            GUI.color = oldColor;
+        }
+
+        private string GetAbmxTimelineDisplayName(string name, string slideName, CharaDetailInfo dInfo)
+        {
+            string displayName = GetTimelineDisplayName(name, dInfo);
+            CharaABMXDetailDefine3 dd3 = dInfo.DetailDefine as CharaABMXDetailDefine3;
+            if (dd3 != null)
+            {
+                displayName += " " + LC(dd3.targetNames[dd3.curTargetIndex]) + " " + LC(dd3.fingerNames[dd3.curFingerIndex]) + " " + LC(dd3.segmentNames[dd3.curSegmentIndex]);
+            }
+            else if (dInfo.DetailDefine is CharaABMXDetailDefine2 dd2)
+            {
+                displayName += " " + LC(dd2.targetNames[dd2.curTargetIndex]);
+            }
+
+            return displayName + " " + LC(slideName);
+        }
+
         private int GetValueFieldWidth(string valueText, int minWidth)
         {
             int dynamicWidth = (valueText == null ? 0 : valueText.Length) * 8 + 18;
@@ -470,8 +589,14 @@ namespace StudioCharaEditor
                         windowStyle = new GUIStyle(GUI.skin.window);
                     }
                     windowRect = GUI.Window(windowID, windowRect, new GUI.WindowFunction(FuncWindowGUI), windowTitle, windowStyle);
+                    if (selectorSidePanel != null)
+                    {
+                        AlignSelectorWindow();
+                        selectorWindowRect = GUI.Window(selectorWindowID, selectorWindowRect, new GUI.WindowFunction(FuncSelectorWindowGUI), LC("Select item"), windowStyle);
+                    }
 
-                    mouseInWindow = windowRect.Contains(Event.current.mousePosition);
+                    mouseInWindow = windowRect.Contains(Event.current.mousePosition) ||
+                                    (selectorSidePanel != null && selectorWindowRect.Contains(Event.current.mousePosition));
                     if (mouseInWindow)
                     {
                         Studio.Studio.Instance.cameraCtrl.noCtrlCondition = cameraNoCtrlCondition;
@@ -487,6 +612,23 @@ namespace StudioCharaEditor
                     GUI.skin = previousSkin;
                 }
             }
+        }
+
+        private void AlignSelectorWindow()
+        {
+            float width = Math.Min(SelectorPanelWidth, Math.Max(320f, Screen.width - 8f));
+            float height = Math.Max(MinWindowHeight, windowRect.height);
+            float x = windowRect.xMax + SelectorPanelGap;
+            if (x + width > Screen.width - 4f)
+            {
+                x = windowRect.x - width - SelectorPanelGap;
+            }
+            if (x < 4f)
+            {
+                x = Math.Max(4f, Screen.width - width - 4f);
+            }
+
+            selectorWindowRect = new Rect(x, windowRect.y, width, height);
         }
 
         private void Update()
@@ -668,7 +810,9 @@ namespace StudioCharaEditor
                 int firstVisible = rowHeight > 0f
                     ? Math.Max(0, (int)(scrollPosition.y / rowHeight) - showBefore)
                     : 0;
-                int lastVisible = Math.Min(filteredCount - 1, firstVisible + showBefore + showAfter + 1);
+                int requestedRows = Math.Max(1, showBefore + showAfter + 2);
+                int rowsToDraw = Math.Min(MaxSelectorRowsPerFrame, requestedRows);
+                int lastVisible = Math.Min(filteredCount - 1, firstVisible + rowsToDraw - 1);
 
                 range.FirstVisible = filteredCount > 0 ? firstVisible : 0;
                 range.LastVisible = lastVisible;
@@ -684,13 +828,18 @@ namespace StudioCharaEditor
 
         private SelectorSearchState GetSelectorSearchState(string selectorKey, List<CustomSelectInfo> infoList, string searchText)
         {
+            return GetSelectorSearchState(selectorKey, infoList, null, searchText);
+        }
+
+        private SelectorSearchState GetSelectorSearchState(string selectorKey, List<CustomSelectInfo> infoList, List<int> sourceIndices, string searchText)
+        {
             if (!selectorSearchPool.TryGetValue(selectorKey, out SelectorSearchState state))
             {
                 state = new SelectorSearchState();
                 selectorSearchPool[selectorKey] = state;
             }
 
-            int infoCount = infoList?.Count ?? 0;
+            int infoCount = sourceIndices?.Count ?? (infoList?.Count ?? 0);
             if (!string.Equals(state.SearchText, searchText) || state.InfoCount != infoCount)
             {
                 state.SearchText = searchText;
@@ -711,9 +860,10 @@ namespace StudioCharaEditor
                 int endIndex = Math.Min(infoCount, state.NextIndex + SelectorSearchBatchSize);
                 for (int i = state.NextIndex; i < endIndex; i++)
                 {
-                    if (SelectorMatchesSearch(infoList[i], true, searchText))
+                    int infoIndex = sourceIndices != null ? sourceIndices[i] : i;
+                    if (infoIndex >= 0 && infoIndex < infoList.Count && SelectorMatchesSearch(infoList[infoIndex], true, searchText))
                     {
-                        state.Matches.Add(i);
+                        state.Matches.Add(infoIndex);
                     }
                 }
 
@@ -766,10 +916,1382 @@ namespace StudioCharaEditor
             }
         }
 
+        private void FuncSelectorWindowGUI(int winID)
+        {
+            try
+            {
+                if (Event.current.type == EventType.MouseDown)
+                {
+                    GUI.FocusControl("");
+                    GUI.FocusWindow(winID);
+                }
+
+                if (selectorSidePanel == null ||
+                    selectorSidePanel.ChaCtrl == null ||
+                    selectorSidePanel.DetailInfo?.DetailDefine?.SelectorList == null)
+                {
+                    CloseSelectorSidePanel();
+                    return;
+                }
+
+                HandleSelectorContextMenuOutsideClick();
+                DrawSelectorSidePanel(selectorSidePanel);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+                CloseSelectorSidePanel();
+            }
+        }
+
+        private void DrawSelectorSidePanel(SelectorSidePanel panel)
+        {
+            bool blockBehindContextMenu = IsSelectorContextMenuBlockingCurrentMouseEvent();
+            bool oldGuiEnabled = GUI.enabled;
+            if (blockBehindContextMenu)
+            {
+                GUI.enabled = false;
+            }
+
+            string selectorKey = panel.SelectorKey;
+            List<CustomSelectInfo> infoList = GetSelectorList(panel.ChaCtrl, panel.DetailInfo);
+            int selectedId = Convert.ToInt32(panel.DetailInfo.DetailDefine.Get(panel.ChaCtrl));
+            int selectedIndex = GetSelectorIndex(selectorKey, infoList, selectedId, out string selectedName);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(LC(panel.Name), GUILayout.Width(namew));
+            GUILayout.Label(string.Format("#{0}: {1}", selectedId, selectedName));
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("X", GUILayout.Width(25)))
+            {
+                CloseSelectorSidePanel();
+            }
+            GUILayout.EndHorizontal();
+
+            if (panel.ThumbList)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(LC("Search"), GUILayout.Width(namew));
+                string newSearch = GUILayout.TextField(panel.SearchText ?? string.Empty);
+                if (!string.Equals(newSearch, panel.SearchText))
+                {
+                    panel.SearchText = newSearch;
+                    ClearSelectorRuntimeCache(selectorKey);
+                }
+                if (GUILayout.Button("X", GUILayout.Width(25)))
+                {
+                    panel.SearchText = string.Empty;
+                    ClearSelectorRuntimeCache(selectorKey);
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            EnsureSelectorFolders(panel, infoList);
+            List<int> folderIndices = GetSelectedFolderIndices(panel);
+            bool inSearching = panel.ThumbList && !string.IsNullOrWhiteSpace(panel.SearchText);
+            string selectorFilterKey = selectorKey + "|side|" + (panel.SelectedFolderKey ?? SelectorFolderAllKey) + "|" + (inSearching ? panel.SearchText : string.Empty);
+            SelectorSearchState searchState = inSearching ? GetSelectorSearchState(selectorFilterKey, infoList, folderIndices, panel.SearchText) : null;
+            List<int> filteredIndices = inSearching ? searchState?.Matches : folderIndices;
+            int filteredCount = filteredIndices?.Count ?? infoList.Count;
+            float rowHeight = panel.ThumbList ? SelectorPanelThumbSize + ThumbListRowGap : 24f;
+            int showBefore = 1;
+            int showAfter = Math.Max(4, (int)Math.Ceiling((selectorWindowRect.height - 112f) / rowHeight) + 2);
+            int selectedVisibleIndex = GetSelectorVisibleIndex(selectedIndex, filteredIndices);
+            if (panel.PendingScrollToSelected)
+            {
+                panel.Scroll = selectedVisibleIndex >= 0
+                    ? new Vector2(0f, Math.Max(0, selectedVisibleIndex) * rowHeight + ThumbListRowGap)
+                    : Vector2.zero;
+                panel.PendingScrollToSelected = false;
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical();
+            Vector2 oldScroll = panel.Scroll;
+            panel.Scroll = GUILayout.BeginScrollView(panel.Scroll, GUI.skin.box, GUILayout.ExpandHeight(true));
+            if (panel.ThumbList)
+            {
+                SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey, infoList, inSearching, panel.SearchText, filteredCount, panel.Scroll, rowHeight, showBefore, showAfter);
+                int firstVisible = range.FirstVisible;
+                int lastVisible = range.LastVisible;
+
+                if (firstVisible > 0)
+                {
+                    GUILayout.Space(firstVisible * rowHeight);
+                }
+
+                int lastDrawn = firstVisible - 1;
+                for (int visibleIndex = firstVisible; visibleIndex <= lastVisible; visibleIndex++)
+                {
+                    int infoIndex = filteredIndices != null ? -1 : visibleIndex;
+                    if (filteredIndices != null)
+                    {
+                        if (visibleIndex < 0 || visibleIndex >= filteredIndices.Count)
+                        {
+                            break;
+                        }
+                        infoIndex = filteredIndices[visibleIndex];
+                    }
+
+                    if (infoIndex >= 0 && infoIndex < infoList.Count)
+                    {
+                        DrawSelectorSideThumbRow(panel, infoList[infoIndex], selectedId);
+                    }
+                    lastDrawn = visibleIndex;
+                }
+
+                int trailingRows = filteredCount - lastDrawn - 1;
+                if (trailingRows > 0)
+                {
+                    GUILayout.Space(trailingRows * rowHeight);
+                }
+                if (inSearching && searchState != null && !searchState.Complete)
+                {
+                    GUILayout.Label(LC("Searching") + "...", GUI.skin.box);
+                }
+            }
+            else
+            {
+                SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey, infoList, false, null, filteredCount, panel.Scroll, rowHeight, 0, MaxSelectorRowsPerFrame - 1);
+                if (range.FirstVisible > 0)
+                {
+                    GUILayout.Space(range.FirstVisible * rowHeight);
+                }
+
+                int lastDrawn = range.FirstVisible - 1;
+                for (int visibleIndex = range.FirstVisible; visibleIndex <= range.LastVisible; visibleIndex++)
+                {
+                    int infoIndex = filteredIndices != null ? -1 : visibleIndex;
+                    if (filteredIndices != null)
+                    {
+                        if (visibleIndex < 0 || visibleIndex >= filteredIndices.Count)
+                        {
+                            break;
+                        }
+                        infoIndex = filteredIndices[visibleIndex];
+                    }
+
+                    if (infoIndex >= 0 && infoIndex < infoList.Count)
+                    {
+                        DrawSelectorSideTextRow(panel, infoList[infoIndex], selectedId);
+                    }
+                    lastDrawn = visibleIndex;
+                }
+
+                int trailingRows = filteredCount - lastDrawn - 1;
+                if (trailingRows > 0)
+                {
+                    GUILayout.Space(trailingRows * rowHeight);
+                }
+            }
+            GUILayout.EndScrollView();
+            TrackSelectorScroll(oldScroll, panel.Scroll);
+
+            if (selectedVisibleIndex >= 0 && GUILayout.Button(LC("Scroll to selected")))
+            {
+                panel.Scroll = new Vector2(0f, Math.Max(0, selectedVisibleIndex) * rowHeight + ThumbListRowGap);
+            }
+            GUILayout.EndVertical();
+            DrawSelectorFolderPanel(panel, infoList);
+            GUILayout.EndHorizontal();
+            GUI.enabled = oldGuiEnabled;
+            DrawSelectorContextMenu(panel);
+        }
+
+        private void DrawSelectorFolderPanel(SelectorSidePanel panel, List<CustomSelectInfo> infoList)
+        {
+            if (!panel.ThumbList)
+            {
+                return;
+            }
+
+            EnsureSelectorFolders(panel, infoList);
+            GUILayout.BeginVertical(GUILayout.Width(SelectorFolderWidth));
+            GUILayout.Label(LC("Folders"), GUI.skin.box, GUILayout.Height(SelectorFolderRowHeight));
+            panel.FolderScroll = GUILayout.BeginScrollView(panel.FolderScroll, GUI.skin.box, GUILayout.ExpandHeight(true));
+            for (int i = 0; i < panel.Folders.Count; i++)
+            {
+                SelectorFolderInfo folder = panel.Folders[i];
+                Color oldColor = GUI.color;
+                if (string.Equals(panel.SelectedFolderKey, folder.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    GUI.color = Color.green;
+                }
+
+                string label = $"{folder.Name} {folder.Count}";
+                Rect folderRect = GUILayoutUtility.GetRect(new GUIContent(label), GUI.skin.button, GUILayout.Height(SelectorFolderRowHeight), GUILayout.ExpandWidth(true));
+                if (DrawSelectorManualButton(folderRect, new GUIContent(label), string.Equals(panel.SelectedFolderKey, folder.Key, StringComparison.OrdinalIgnoreCase)))
+                {
+                    SelectFolder(panel, folder.Key);
+                }
+                else if (ConsumeSelectorRightClick(folderRect))
+                {
+                    OpenSelectorFolderContextMenu(panel, folder);
+                }
+
+                GUI.color = oldColor;
+            }
+            GUILayout.EndScrollView();
+            GUILayout.EndVertical();
+        }
+
+        private void SelectFolder(SelectorSidePanel panel, string folderKey)
+        {
+            if (string.Equals(panel.SelectedFolderKey, folderKey, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            panel.SelectedFolderKey = folderKey;
+            panel.PendingScrollToSelected = true;
+            panel.Scroll = Vector2.zero;
+            selectorRenderRangePool.Clear();
+        }
+
+        private void EnsureSelectorFolders(SelectorSidePanel panel, List<CustomSelectInfo> infoList)
+        {
+            EnsureSelectorFavoritesLoaded();
+            EnsureSelectorCustomFoldersLoaded();
+            int infoCount = infoList?.Count ?? 0;
+            if (panel.Folders != null &&
+                panel.FolderInfoCount == infoCount &&
+                panel.FolderFavoriteVersion == selectorFavoriteVersion &&
+                panel.FolderCustomVersion == selectorCustomFolderVersion)
+            {
+                return;
+            }
+
+            panel.FolderInfoCount = infoCount;
+            panel.FolderFavoriteVersion = selectorFavoriteVersion;
+            panel.FolderCustomVersion = selectorCustomFolderVersion;
+            panel.Folders = new List<SelectorFolderInfo>
+            {
+                new SelectorFolderInfo
+                {
+                    Key = SelectorFolderAllKey,
+                    Name = LC("All"),
+                    Count = infoCount
+                }
+            };
+
+            SelectorFolderInfo favoritesFolder = new SelectorFolderInfo
+            {
+                Key = SelectorFolderFavoritesKey,
+                Name = LC("Fav")
+            };
+
+            for (int i = 0; i < infoCount; i++)
+            {
+                if (IsSelectorFavorite(panel.SelectorKey, infoList[i]))
+                {
+                    favoritesFolder.Count++;
+                    favoritesFolder.Indices.Add(i);
+                }
+            }
+            panel.Folders.Add(favoritesFolder);
+
+            string scope = GetSelectorFavoriteScope(panel.SelectorKey);
+            foreach (SelectorCustomFolder customFolder in GetCustomFolders(scope).OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                SelectorFolderInfo folderInfo = new SelectorFolderInfo
+                {
+                    Key = GetCustomFolderKey(customFolder.Name),
+                    Name = customFolder.Name
+                };
+
+                for (int i = 0; i < infoCount; i++)
+                {
+                    if (SelectorFolderContainsItem(customFolder, panel.ChaCtrl, infoList[i]))
+                    {
+                        folderInfo.Count++;
+                        folderInfo.Indices.Add(i);
+                    }
+                }
+
+                panel.Folders.Add(folderInfo);
+            }
+
+            if (!panel.Folders.Any(folder => string.Equals(folder.Key, panel.SelectedFolderKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                panel.SelectedFolderKey = SelectorFolderAllKey;
+            }
+        }
+
+        private List<int> GetSelectedFolderIndices(SelectorSidePanel panel)
+        {
+            if (panel == null || string.IsNullOrEmpty(panel.SelectedFolderKey) || panel.SelectedFolderKey == SelectorFolderAllKey)
+            {
+                return null;
+            }
+
+            SelectorFolderInfo folder = panel.Folders?.FirstOrDefault(info => string.Equals(info.Key, panel.SelectedFolderKey, StringComparison.OrdinalIgnoreCase));
+            return folder?.Indices;
+        }
+
+        private static int GetSelectorVisibleIndex(int infoIndex, List<int> filteredIndices)
+        {
+            if (infoIndex < 0)
+            {
+                return -1;
+            }
+
+            if (filteredIndices == null)
+            {
+                return infoIndex;
+            }
+
+            for (int i = 0; i < filteredIndices.Count; i++)
+            {
+                if (filteredIndices[i] == infoIndex)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private void DrawSelectorFavoriteButton(SelectorSidePanel panel, CustomSelectInfo info, float height)
+        {
+            bool favorite = IsSelectorFavorite(panel.SelectorKey, info);
+            Color oldColor = GUI.color;
+            if (favorite)
+            {
+                GUI.color = Color.yellow;
+            }
+
+            GUIContent content = new GUIContent(favorite ? "F" : "+", favorite ? "Remove favorite" : "Add favorite");
+            if (GUILayout.Button(content, GUILayout.Width(SelectorFavoriteButtonWidth), GUILayout.Height(height)))
+            {
+                ToggleSelectorFavorite(panel, info);
+            }
+
+            GUI.color = oldColor;
+        }
+
+        private bool IsSelectorFavorite(string selectorKey, CustomSelectInfo info)
+        {
+            EnsureSelectorFavoritesLoaded();
+            return info != null && selectorFavoriteKeys.Contains(GetSelectorFavoriteKey(selectorKey, info.id));
+        }
+
+        private void ToggleSelectorFavorite(SelectorSidePanel panel, CustomSelectInfo info)
+        {
+            if (panel == null || info == null)
+            {
+                return;
+            }
+
+            EnsureSelectorFavoritesLoaded();
+            string key = GetSelectorFavoriteKey(panel.SelectorKey, info.id);
+            if (!selectorFavoriteKeys.Add(key))
+            {
+                selectorFavoriteKeys.Remove(key);
+            }
+
+            selectorFavoriteVersion++;
+            panel.FolderInfoCount = -1;
+            selectorRenderRangePool.Clear();
+            selectorSearchPool.Clear();
+            SaveSelectorFavorites();
+        }
+
+        private static string GetSelectorFavoriteKey(string selectorKey, int id)
+        {
+            return GetSelectorFavoriteScope(selectorKey) + "|" + id;
+        }
+
+        private static string GetSelectorFavoriteScope(string selectorKey)
+        {
+            if (string.IsNullOrEmpty(selectorKey))
+            {
+                return string.Empty;
+            }
+
+            if (selectorKey.StartsWith(CharaEditorController.CT1_ACCS + "#", StringComparison.Ordinal) &&
+                selectorKey.EndsWith("#Acc ID", StringComparison.Ordinal))
+            {
+                return CharaEditorController.CT1_ACCS + "#Acc ID";
+            }
+
+            return selectorKey;
+        }
+
+        private void EnsureSelectorFavoritesLoaded()
+        {
+            if (selectorFavoritesLoaded)
+            {
+                return;
+            }
+
+            selectorFavoritesLoaded = true;
+            selectorFavoriteKeys.Clear();
+            string path = GetSelectorFavoritesPath();
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+
+                string[] lines = File.ReadAllLines(path);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = lines[i]?.Trim();
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        selectorFavoriteKeys.Add(line);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger?.LogWarning("Failed to load StudioCharaEditor favorites: " + ex.Message);
+                }
+            }
+        }
+
+        private void SaveSelectorFavorites()
+        {
+            try
+            {
+                File.WriteAllLines(GetSelectorFavoritesPath(), selectorFavoriteKeys.OrderBy(key => key).ToArray());
+            }
+            catch (Exception ex)
+            {
+                if (StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger?.LogWarning("Failed to save StudioCharaEditor favorites: " + ex.Message);
+                }
+            }
+        }
+
+        private static string GetSelectorFavoritesPath()
+        {
+            return Path.Combine(CharaEditorMgr.GetDllPath(), "HS2StudioCharaEditorFavorites.txt");
+        }
+
+        private void HandleSelectorContextMenuOutsideClick()
+        {
+            Event evt = Event.current;
+            if (selectorContextMenu == null || evt.type != EventType.MouseDown)
+            {
+                return;
+            }
+
+            if (!selectorContextMenu.Rect.Contains(evt.mousePosition))
+            {
+                selectorContextMenu = null;
+            }
+        }
+
+        private bool IsSelectorContextMenuBlockingCurrentMouseEvent()
+        {
+            if (selectorContextMenu == null)
+            {
+                return false;
+            }
+
+            Event evt = Event.current;
+            if (evt.type != EventType.MouseDown &&
+                evt.type != EventType.MouseUp &&
+                evt.type != EventType.MouseDrag &&
+                evt.type != EventType.ScrollWheel)
+            {
+                return false;
+            }
+
+            return selectorContextMenu.Rect.Contains(evt.mousePosition);
+        }
+
+        private static bool DrawSelectorManualButton(Rect rect, GUIContent content, bool isOn)
+        {
+            Event evt = Event.current;
+            bool containsMouse = rect.Contains(evt.mousePosition);
+            if (evt.type == EventType.Repaint)
+            {
+                GUI.skin.button.Draw(rect, content, containsMouse, false, isOn, false);
+            }
+
+            if (GUI.enabled && evt.type == EventType.MouseDown && evt.button == 0 && containsMouse)
+            {
+                evt.Use();
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool ConsumeSelectorRightClick(Rect rect)
+        {
+            Event evt = Event.current;
+            if (!GUI.enabled || evt.type != EventType.MouseDown || evt.button != 1 || !rect.Contains(evt.mousePosition))
+            {
+                return false;
+            }
+
+            evt.Use();
+            return true;
+        }
+
+        private void OpenSelectorItemContextMenu(SelectorSidePanel panel, CustomSelectInfo info)
+        {
+            if (panel == null || info == null)
+            {
+                return;
+            }
+
+            string scope = GetSelectorFavoriteScope(panel.SelectorKey);
+            selectorContextMenu = new SelectorContextMenu
+            {
+                Type = SelectorContextMenuType.Item,
+                Position = GUIUtility.GUIToScreenPoint(Event.current.mousePosition),
+                Scope = scope,
+                Item = info
+            };
+        }
+
+        private void OpenSelectorFolderContextMenu(SelectorSidePanel panel, SelectorFolderInfo folder)
+        {
+            if (panel == null || folder == null)
+            {
+                return;
+            }
+
+            string scope = GetSelectorFavoriteScope(panel.SelectorKey);
+            string folderName = GetCustomFolderNameFromKey(folder.Key);
+            selectorContextMenu = new SelectorContextMenu
+            {
+                Type = SelectorContextMenuType.Folder,
+                Position = GUIUtility.GUIToScreenPoint(Event.current.mousePosition),
+                Scope = scope,
+                FolderKey = folder.Key,
+                FolderName = folderName,
+                RenameFolderName = folderName
+            };
+        }
+
+        private void DrawSelectorContextMenu(SelectorSidePanel panel)
+        {
+            if (selectorContextMenu == null || panel == null)
+            {
+                return;
+            }
+
+            const float menuWidth = 220f;
+            float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item ? 260f : 210f;
+            Vector2 menuPosition = GUIUtility.ScreenToGUIPoint(selectorContextMenu.Position);
+            float x = Mathf.Clamp(menuPosition.x, 4f, Math.Max(4f, selectorWindowRect.width - menuWidth - 4f));
+            float y = Mathf.Clamp(menuPosition.y, 24f, Math.Max(24f, selectorWindowRect.height - menuHeight - 4f));
+            selectorContextMenu.Rect = new Rect(x, y, menuWidth, menuHeight);
+
+            GUILayout.BeginArea(selectorContextMenu.Rect, GUI.skin.box);
+            if (selectorContextMenu.Type == SelectorContextMenuType.Item)
+            {
+                DrawSelectorItemContextMenu(panel, selectorContextMenu);
+            }
+            else
+            {
+                DrawSelectorFolderContextMenu(panel, selectorContextMenu);
+            }
+            GUILayout.EndArea();
+        }
+
+        private void DrawSelectorItemContextMenu(SelectorSidePanel panel, SelectorContextMenu menu)
+        {
+            CustomSelectInfo item = menu.Item;
+            if (item == null)
+            {
+                selectorContextMenu = null;
+                return;
+            }
+
+            GUILayout.Label("#" + item.id, GUI.skin.box);
+            bool favorite = IsSelectorFavorite(panel.SelectorKey, item);
+            if (GUILayout.Button(favorite ? LC("Remove favorite") : LC("Add favorite")))
+            {
+                ToggleSelectorFavorite(panel, item);
+            }
+
+            GUILayout.Label(LC("Folders"), GUI.skin.box);
+            List<SelectorCustomFolder> folders = GetCustomFolders(menu.Scope);
+            for (int i = 0; i < folders.Count; i++)
+            {
+                SelectorCustomFolder folder = folders[i];
+                bool contains = SelectorFolderContainsItem(folder, panel.ChaCtrl, item);
+                string label = (contains ? "- " : "+ ") + folder.Name;
+                if (GUILayout.Button(label))
+                {
+                    if (contains)
+                    {
+                        RemoveSelectorFolderItem(folder, panel.ChaCtrl, item);
+                    }
+                    else
+                    {
+                        AddSelectorFolderItem(folder, panel.ChaCtrl, item);
+                    }
+
+                    MarkSelectorCustomFoldersChanged(panel);
+                    SaveSelectorCustomFolders();
+                }
+            }
+
+            GUILayout.BeginHorizontal();
+            menu.NewFolderName = GUILayout.TextField(menu.NewFolderName ?? string.Empty);
+            if (GUILayout.Button(LC("Create"), GUILayout.Width(58)))
+            {
+                SelectorCustomFolder folder = CreateSelectorCustomFolder(menu.Scope, menu.NewFolderName);
+                if (folder != null)
+                {
+                    AddSelectorFolderItem(folder, panel.ChaCtrl, item);
+                    menu.NewFolderName = string.Empty;
+                    MarkSelectorCustomFoldersChanged(panel);
+                    SaveSelectorCustomFolders();
+                }
+            }
+            GUILayout.EndHorizontal();
+
+            if (GUILayout.Button(LC("Close")))
+            {
+                selectorContextMenu = null;
+            }
+        }
+
+        private void DrawSelectorFolderContextMenu(SelectorSidePanel panel, SelectorContextMenu menu)
+        {
+            bool isCustomFolder = IsCustomFolderKey(menu.FolderKey);
+            GUILayout.Label(isCustomFolder ? menu.FolderName : LC("Folders"), GUI.skin.box);
+
+            if (isCustomFolder)
+            {
+                GUILayout.BeginHorizontal();
+                menu.RenameFolderName = GUILayout.TextField(menu.RenameFolderName ?? string.Empty);
+                if (GUILayout.Button(LC("Rename"), GUILayout.Width(68)))
+                {
+                    if (RenameSelectorCustomFolder(menu.Scope, menu.FolderName, menu.RenameFolderName, panel))
+                    {
+                        menu.FolderName = NormalizeSelectorFolderName(menu.RenameFolderName);
+                        menu.FolderKey = GetCustomFolderKey(menu.FolderName);
+                    }
+                }
+                GUILayout.EndHorizontal();
+
+                if (GUILayout.Button(LC("Clear items")))
+                {
+                    SelectorCustomFolder folder = FindSelectorCustomFolder(menu.Scope, menu.FolderName);
+                    if (folder != null)
+                    {
+                        folder.ItemKeys.Clear();
+                        folder.LegacyItemIds.Clear();
+                        MarkSelectorCustomFoldersChanged(panel);
+                        SaveSelectorCustomFolders();
+                    }
+                }
+
+                if (GUILayout.Button(LC("Delete folder")))
+                {
+                    DeleteSelectorCustomFolder(menu.Scope, menu.FolderName, panel);
+                    selectorContextMenu = null;
+                    return;
+                }
+            }
+
+            GUILayout.Label(LC("Create folder"), GUI.skin.box);
+            GUILayout.BeginHorizontal();
+            menu.NewFolderName = GUILayout.TextField(menu.NewFolderName ?? string.Empty);
+            if (GUILayout.Button(LC("Create"), GUILayout.Width(58)))
+            {
+                if (CreateSelectorCustomFolder(menu.Scope, menu.NewFolderName) != null)
+                {
+                    menu.NewFolderName = string.Empty;
+                    MarkSelectorCustomFoldersChanged(panel);
+                    SaveSelectorCustomFolders();
+                }
+            }
+            GUILayout.EndHorizontal();
+
+            if (GUILayout.Button(LC("Close")))
+            {
+                selectorContextMenu = null;
+            }
+        }
+
+        private void EnsureSelectorCustomFoldersLoaded()
+        {
+            if (selectorCustomFoldersLoaded)
+            {
+                return;
+            }
+
+            selectorCustomFoldersLoaded = true;
+            selectorCustomFoldersByScope.Clear();
+            string path = GetSelectorCustomFoldersPath();
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+
+                string[] lines = File.ReadAllLines(path);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = lines[i];
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    string[] parts = line.Split('\t');
+                    if (parts.Length < 3)
+                    {
+                        continue;
+                    }
+
+                    string scope = DecodeSelectorFolderField(parts[1]);
+                    string name = NormalizeSelectorFolderName(DecodeSelectorFolderField(parts[2]));
+                    if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name))
+                    {
+                        continue;
+                    }
+
+                    SelectorCustomFolder folder = GetOrCreateSelectorCustomFolder(scope, name);
+                    if (parts[0] == "itemkey" && parts.Length >= 4)
+                    {
+                        string itemKey = DecodeSelectorFolderField(parts[3]);
+                        if (!string.IsNullOrEmpty(itemKey))
+                        {
+                            folder.ItemKeys.Add(itemKey);
+                        }
+                    }
+                    else if (parts[0] == "item" && parts.Length >= 4 && int.TryParse(parts[3], out int id))
+                    {
+                        folder.LegacyItemIds.Add(id);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger?.LogWarning("Failed to load StudioCharaEditor custom folders: " + ex.Message);
+                }
+            }
+        }
+
+        private void SaveSelectorCustomFolders()
+        {
+            try
+            {
+                List<string> lines = new List<string>();
+                foreach (KeyValuePair<string, List<SelectorCustomFolder>> pair in selectorCustomFoldersByScope.OrderBy(pair => pair.Key))
+                {
+                    foreach (SelectorCustomFolder folder in pair.Value.OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        string scope = EncodeSelectorFolderField(pair.Key);
+                        string name = EncodeSelectorFolderField(folder.Name);
+                        lines.Add("folder\t" + scope + "\t" + name);
+                        foreach (string itemKey in folder.ItemKeys.OrderBy(key => key, StringComparer.Ordinal))
+                        {
+                            lines.Add("itemkey\t" + scope + "\t" + name + "\t" + EncodeSelectorFolderField(itemKey));
+                        }
+                        foreach (int id in folder.LegacyItemIds.OrderBy(id => id))
+                        {
+                            lines.Add("item\t" + scope + "\t" + name + "\t" + id);
+                        }
+                    }
+                }
+
+                File.WriteAllLines(GetSelectorCustomFoldersPath(), lines.ToArray());
+            }
+            catch (Exception ex)
+            {
+                if (StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger?.LogWarning("Failed to save StudioCharaEditor custom folders: " + ex.Message);
+                }
+            }
+        }
+
+        private List<SelectorCustomFolder> GetCustomFolders(string scope)
+        {
+            EnsureSelectorCustomFoldersLoaded();
+            if (!selectorCustomFoldersByScope.TryGetValue(scope, out List<SelectorCustomFolder> folders))
+            {
+                folders = new List<SelectorCustomFolder>();
+                selectorCustomFoldersByScope[scope] = folders;
+            }
+            return folders;
+        }
+
+        private SelectorCustomFolder CreateSelectorCustomFolder(string scope, string rawName)
+        {
+            string name = NormalizeSelectorFolderName(rawName);
+            if (string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+
+            SelectorCustomFolder existing = FindSelectorCustomFolder(scope, name);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            SelectorCustomFolder folder = GetOrCreateSelectorCustomFolder(scope, name);
+            selectorCustomFolderVersion++;
+            return folder;
+        }
+
+        private SelectorCustomFolder GetOrCreateSelectorCustomFolder(string scope, string name)
+        {
+            List<SelectorCustomFolder> folders = GetCustomFolders(scope);
+            SelectorCustomFolder folder = folders.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (folder != null)
+            {
+                return folder;
+            }
+
+            folder = new SelectorCustomFolder
+            {
+                Scope = scope,
+                Name = name
+            };
+            folders.Add(folder);
+            return folder;
+        }
+
+        private SelectorCustomFolder FindSelectorCustomFolder(string scope, string name)
+        {
+            return GetCustomFolders(scope).FirstOrDefault(folder => string.Equals(folder.Name, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private bool RenameSelectorCustomFolder(string scope, string oldName, string rawNewName, SelectorSidePanel panel)
+        {
+            string newName = NormalizeSelectorFolderName(rawNewName);
+            if (string.IsNullOrEmpty(newName))
+            {
+                return false;
+            }
+
+            SelectorCustomFolder folder = FindSelectorCustomFolder(scope, oldName);
+            if (folder == null)
+            {
+                return false;
+            }
+
+            SelectorCustomFolder existing = FindSelectorCustomFolder(scope, newName);
+            if (existing != null && !ReferenceEquals(existing, folder))
+            {
+                foreach (string itemKey in folder.ItemKeys)
+                {
+                    existing.ItemKeys.Add(itemKey);
+                }
+                foreach (int id in folder.LegacyItemIds)
+                {
+                    existing.LegacyItemIds.Add(id);
+                }
+                GetCustomFolders(scope).Remove(folder);
+            }
+            else
+            {
+                folder.Name = newName;
+            }
+
+            if (panel != null && string.Equals(panel.SelectedFolderKey, GetCustomFolderKey(oldName), StringComparison.OrdinalIgnoreCase))
+            {
+                panel.SelectedFolderKey = GetCustomFolderKey(newName);
+            }
+            MarkSelectorCustomFoldersChanged(panel);
+            SaveSelectorCustomFolders();
+            return true;
+        }
+
+        private void DeleteSelectorCustomFolder(string scope, string folderName, SelectorSidePanel panel)
+        {
+            SelectorCustomFolder folder = FindSelectorCustomFolder(scope, folderName);
+            if (folder != null)
+            {
+                GetCustomFolders(scope).Remove(folder);
+                if (panel != null && string.Equals(panel.SelectedFolderKey, GetCustomFolderKey(folderName), StringComparison.OrdinalIgnoreCase))
+                {
+                    panel.SelectedFolderKey = SelectorFolderAllKey;
+                }
+                MarkSelectorCustomFoldersChanged(panel);
+                SaveSelectorCustomFolders();
+            }
+        }
+
+        private void MarkSelectorCustomFoldersChanged(SelectorSidePanel panel)
+        {
+            selectorCustomFolderVersion++;
+            if (panel != null)
+            {
+                panel.FolderInfoCount = -1;
+                panel.PendingScrollToSelected = true;
+            }
+            selectorRenderRangePool.Clear();
+            selectorSearchPool.Clear();
+        }
+
+        private static bool SelectorFolderContainsItem(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (folder == null || info == null)
+            {
+                return false;
+            }
+
+            return folder.ItemKeys.Any(key => SelectorItemKeyMatches(key, chaCtrl, info)) || folder.LegacyItemIds.Contains(info.id);
+        }
+
+        private static void AddSelectorFolderItem(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (folder == null || info == null)
+            {
+                return;
+            }
+
+            RemoveSelectorFolderItemKeys(folder, chaCtrl, info);
+            folder.ItemKeys.Add(GetSelectorItemKey(chaCtrl, info));
+            folder.LegacyItemIds.Remove(info.id);
+        }
+
+        private static void RemoveSelectorFolderItem(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (folder == null || info == null)
+            {
+                return;
+            }
+
+            RemoveSelectorFolderItemKeys(folder, chaCtrl, info);
+            folder.LegacyItemIds.Remove(info.id);
+        }
+
+        private static void RemoveSelectorFolderItemKeys(SelectorCustomFolder folder, ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (folder?.ItemKeys == null || info == null)
+            {
+                return;
+            }
+
+            List<string> keysToRemove = folder.ItemKeys.Where(key => SelectorItemKeyMatches(key, chaCtrl, info)).ToList();
+            for (int i = 0; i < keysToRemove.Count; i++)
+            {
+                folder.ItemKeys.Remove(keysToRemove[i]);
+            }
+        }
+
+        private static string GetSelectorItemKey(ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (info == null)
+            {
+                return string.Empty;
+            }
+
+            string listInfoKey = GetSelectorListInfoKey(chaCtrl, info);
+            if (!string.IsNullOrEmpty(listInfoKey))
+            {
+                return listInfoKey;
+            }
+
+            return string.Join("|", new[]
+            {
+                info.category.ToString(),
+                info.id.ToString()
+            });
+        }
+
+        private static bool SelectorItemKeyMatches(string storedKey, ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (info == null || string.IsNullOrEmpty(storedKey))
+            {
+                return false;
+            }
+
+            if (string.Equals(storedKey, GetSelectorItemKey(chaCtrl, info), StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            string[] parts = storedKey.Split('|');
+            if (parts.Length < 2)
+            {
+                return false;
+            }
+
+            if (parts[0] == info.category.ToString() &&
+                parts[1] == info.id.ToString())
+            {
+                return true;
+            }
+
+            return SelectorLegacyAssetKeyMatches(parts, chaCtrl, info);
+        }
+
+        private static string GetSelectorListInfoKey(ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            ListInfoBase listInfo = TryGetSelectorListInfo(chaCtrl, info);
+            if (listInfo == null)
+            {
+                return null;
+            }
+
+            string mainManifest = GetListInfoString(listInfo, KeyType.MainManifest);
+            string mainAb = GetListInfoString(listInfo, KeyType.MainAB);
+            string mainData = GetListInfoString(listInfo, KeyType.MainData);
+            string mainData02 = GetListInfoString(listInfo, KeyType.MainData02);
+            string thumbAb = FirstNotEmpty(GetListInfoString(listInfo, KeyType.ThumbAB), info.assetBundle);
+            string thumbTex = FirstNotEmpty(GetListInfoString(listInfo, KeyType.ThumbTex), info.assetName);
+            string name = FirstNotEmpty(listInfo.Name, info.name);
+
+            bool hasSourceInfo =
+                !string.IsNullOrEmpty(mainManifest) ||
+                !string.IsNullOrEmpty(mainAb) ||
+                !string.IsNullOrEmpty(mainData) ||
+                !string.IsNullOrEmpty(mainData02) ||
+                !string.IsNullOrEmpty(thumbAb) ||
+                !string.IsNullOrEmpty(thumbTex);
+            if (hasSourceInfo)
+            {
+                return string.Join("|", new[]
+                {
+                    "list",
+                    info.category.ToString(),
+                    EncodeSelectorKeyPart(mainManifest),
+                    EncodeSelectorKeyPart(mainAb),
+                    EncodeSelectorKeyPart(mainData),
+                    EncodeSelectorKeyPart(mainData02),
+                    EncodeSelectorKeyPart(thumbAb),
+                    EncodeSelectorKeyPart(thumbTex)
+                });
+            }
+
+            if (string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+
+            return string.Join("|", new[]
+            {
+                "name",
+                info.category.ToString(),
+                EncodeSelectorKeyPart(name)
+            });
+        }
+
+        private static ListInfoBase TryGetSelectorListInfo(ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (chaCtrl?.lstCtrl == null || info == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return chaCtrl.lstCtrl.GetListInfo((CategoryNo)info.category, info.id);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string GetListInfoString(ListInfoBase listInfo, KeyType keyType)
+        {
+            if (listInfo == null)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return listInfo.GetInfo(keyType) ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static bool SelectorLegacyAssetKeyMatches(string[] parts, ChaControl chaCtrl, CustomSelectInfo info)
+        {
+            if (parts.Length < 4 || parts[0] != info.category.ToString())
+            {
+                return false;
+            }
+
+            string storedBundle = DecodeSelectorKeyPart(parts[2]);
+            string storedAsset = DecodeSelectorKeyPart(parts[3]);
+            if (string.IsNullOrEmpty(storedBundle) && string.IsNullOrEmpty(storedAsset))
+            {
+                return false;
+            }
+
+            ListInfoBase listInfo = TryGetSelectorListInfo(chaCtrl, info);
+            string[] bundleCandidates =
+            {
+                info.assetBundle,
+                GetListInfoString(listInfo, KeyType.ThumbAB),
+                GetListInfoString(listInfo, KeyType.MainAB)
+            };
+            string[] assetCandidates =
+            {
+                info.assetName,
+                GetListInfoString(listInfo, KeyType.ThumbTex),
+                GetListInfoString(listInfo, KeyType.MainData),
+                GetListInfoString(listInfo, KeyType.MainData02)
+            };
+
+            return
+                SelectorValueMatchesAny(storedBundle, bundleCandidates) &&
+                SelectorValueMatchesAny(storedAsset, assetCandidates);
+        }
+
+        private static bool SelectorValueMatchesAny(string value, IEnumerable<string> candidates)
+        {
+            string normalizedValue = NormalizeSelectorKeyValue(value);
+            if (string.IsNullOrEmpty(normalizedValue))
+            {
+                return false;
+            }
+
+            return candidates.Any(candidate => string.Equals(normalizedValue, NormalizeSelectorKeyValue(candidate), StringComparison.Ordinal));
+        }
+
+        private static string EncodeSelectorKeyPart(string value)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(NormalizeSelectorKeyValue(value)));
+        }
+
+        private static string DecodeSelectorKeyPart(string value)
+        {
+            try
+            {
+                return Encoding.UTF8.GetString(Convert.FromBase64String(value ?? string.Empty));
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string NormalizeSelectorKeyValue(string value)
+        {
+            return (value ?? string.Empty).Trim().ToLowerInvariant();
+        }
+
+        private static string FirstNotEmpty(params string[] values)
+        {
+            if (values == null)
+            {
+                return string.Empty;
+            }
+
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(values[i]))
+                {
+                    return values[i];
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static string NormalizeSelectorFolderName(string rawName)
+        {
+            if (string.IsNullOrWhiteSpace(rawName))
+            {
+                return string.Empty;
+            }
+
+            string name = rawName.Trim().Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+            while (name.Contains("  "))
+            {
+                name = name.Replace("  ", " ");
+            }
+            if (name.Length > 32)
+            {
+                name = name.Substring(0, 32).Trim();
+            }
+
+            if (string.Equals(name, "All", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, "Fav", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, "Favorites", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            return name;
+        }
+
+        private static string GetCustomFolderKey(string folderName)
+        {
+            return SelectorFolderCustomPrefix + folderName;
+        }
+
+        private static bool IsCustomFolderKey(string folderKey)
+        {
+            return !string.IsNullOrEmpty(folderKey) && folderKey.StartsWith(SelectorFolderCustomPrefix, StringComparison.Ordinal);
+        }
+
+        private static string GetCustomFolderNameFromKey(string folderKey)
+        {
+            return IsCustomFolderKey(folderKey) ? folderKey.Substring(SelectorFolderCustomPrefix.Length) : string.Empty;
+        }
+
+        private static string EncodeSelectorFolderField(string value)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? string.Empty));
+        }
+
+        private static string DecodeSelectorFolderField(string value)
+        {
+            try
+            {
+                return Encoding.UTF8.GetString(Convert.FromBase64String(value ?? string.Empty));
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string GetSelectorCustomFoldersPath()
+        {
+            return Path.Combine(CharaEditorMgr.GetDllPath(), "HS2StudioCharaEditorFolders.txt");
+        }
+
+        private void DrawSelectorSideThumbRow(SelectorSidePanel panel, CustomSelectInfo info, int selectedId)
+        {
+            Color color = GUI.color;
+            Texture2D texture = GetSelectorThumbTexture(panel.Name, info);
+            GUILayout.BeginHorizontal();
+            GUILayout.Box(texture, GUILayout.Width(SelectorPanelThumbSize), GUILayout.Height(SelectorPanelThumbSize));
+            GUILayout.BeginVertical();
+            GUILayout.Space(Math.Max(0f, (SelectorPanelThumbSize - SelectorPanelButtonHeight) * 0.5f));
+            GUILayout.BeginHorizontal();
+            DrawSelectorFavoriteButton(panel, info, SelectorPanelButtonHeight);
+            Color buttonColor = GUI.color;
+            GUIContent content = new GUIContent(string.Format("#{0}:\n{1}", info.id, info.name));
+            Rect itemRect = GUILayoutUtility.GetRect(content, GUI.skin.button, GUILayout.Height(SelectorPanelButtonHeight), GUILayout.ExpandWidth(true));
+            if (info.id == selectedId)
+            {
+                GUI.color = Color.green;
+            }
+            if (DrawSelectorManualButton(itemRect, content, info.id == selectedId))
+            {
+                ChangeSelectorSidePanelId(panel, info.id);
+            }
+            else if (ConsumeSelectorRightClick(itemRect))
+            {
+                OpenSelectorItemContextMenu(panel, info);
+            }
+            GUI.color = buttonColor;
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+            GUI.color = color;
+        }
+
+        private void DrawSelectorSideTextRow(SelectorSidePanel panel, CustomSelectInfo info, int selectedId)
+        {
+            Color color = GUI.color;
+            GUILayout.BeginHorizontal();
+            DrawSelectorFavoriteButton(panel, info, 20f);
+            Color buttonColor = GUI.color;
+            GUIContent content = new GUIContent(string.Format("#{0}: {1}", info.id, info.name));
+            Rect itemRect = GUILayoutUtility.GetRect(content, GUI.skin.button, GUILayout.ExpandWidth(true));
+            if (info.id == selectedId)
+            {
+                GUI.color = Color.green;
+            }
+            if (DrawSelectorManualButton(itemRect, content, info.id == selectedId))
+            {
+                ChangeSelectorSidePanelId(panel, info.id);
+            }
+            else if (ConsumeSelectorRightClick(itemRect))
+            {
+                OpenSelectorItemContextMenu(panel, info);
+            }
+            GUI.color = buttonColor;
+            GUILayout.EndHorizontal();
+            GUI.color = color;
+        }
+
+        private void ChangeSelectorSidePanelId(SelectorSidePanel panel, int id)
+        {
+            int oldId = Convert.ToInt32(panel.DetailInfo.DetailDefine.Get(panel.ChaCtrl));
+            if (id == oldId)
+            {
+                if (StudioCharaEditor.CloseListAfterSelect.Value)
+                {
+                    CloseSelectorSidePanel();
+                }
+                return;
+            }
+
+            panel.DetailInfo.DetailDefine.Set(panel.ChaCtrl, id);
+            ClearSelectorCache();
+            if (panel.DetailInfo.DetailDefine.Upd != null && !LaterUpdate)
+            {
+                panel.DetailInfo.DetailDefine.Upd(panel.ChaCtrl);
+            }
+
+            if (StudioCharaEditor.CloseListAfterSelect.Value)
+            {
+                CloseSelectorSidePanel();
+            }
+        }
+
+        private void OpenSelectorSidePanel(ChaControl chaCtrl, string name, CharaDetailInfo dInfo, int selectedIndex, bool thumbList, float rowHeight)
+        {
+            string selectorKey = dInfo.DetailDefine.Key;
+            if (!thumbPool.ContainsKey(name))
+            {
+                thumbPool[name] = new Dictionary<string, Texture2D>();
+            }
+
+            selectorSidePanel = new SelectorSidePanel
+            {
+                Name = name,
+                SelectorKey = selectorKey,
+                ChaCtrl = chaCtrl,
+                DetailInfo = dInfo,
+                ThumbList = thumbList,
+                SearchText = string.Empty,
+                Scroll = new Vector2(0f, Math.Max(0, selectedIndex) * rowHeight + ThumbListRowGap),
+                PendingScrollToSelected = true
+            };
+            ClearSelectorRuntimeCache(selectorKey);
+        }
+
+        private bool IsSelectorSidePanelOpen(string selectorKey)
+        {
+            return selectorSidePanel != null && selectorSidePanel.SelectorKey == selectorKey;
+        }
+
+        private void CloseSelectorSidePanel(string selectorKey)
+        {
+            if (IsSelectorSidePanelOpen(selectorKey))
+            {
+                CloseSelectorSidePanel();
+            }
+        }
+
+        private void CloseSelectorSidePanel()
+        {
+            selectorSidePanel = null;
+            selectorContextMenu = null;
+        }
+
         private void OnSelectChange(TreeNodeObject newSel)
         {
             lastSelectedTreeNode = newSel;
             ociTarget = GetOCICharFromNode(newSel);
+            CloseSelectorSidePanel();
             ClearSelectorCache();
             //Console.WriteLine("Select change to {0}", ociTarget);
         }
@@ -1427,10 +2949,13 @@ namespace StudioCharaEditor
                     clipboard = cec.GetDataDictFull();
                 }
                 bool canPaste = clipboard != null;
-                if (GUILayout.Button(canPaste ? LC("Paste All") : " ", btnstyle, GUILayout.Width(cbwidth)) && canPaste)
+                bool oldEnabled = GUI.enabled;
+                GUI.enabled = oldEnabled && canPaste;
+                if (GUILayout.Button(LC("Paste All"), btnstyle, GUILayout.Width(cbwidth)))
                 {
                     cec.SetDataDict(clipboard);
                 }
+                GUI.enabled = oldEnabled;
                 if (GUILayout.Button(LC("Revert All"), btnstyle, GUILayout.Width(cbwidth)))
                 {
                     cec.RevertAll();
@@ -1647,6 +3172,7 @@ namespace StudioCharaEditor
                 if (unexpandOnSelect)
                 {
                     expandPool[name] = false;   // no matter changed or not
+                    CloseSelectorSidePanel(selectorKey);
                 }
                 if (id != oldId)
                 {
@@ -1658,23 +3184,7 @@ namespace StudioCharaEditor
 
             Texture2D getThumbTex(CustomSelectInfo info)
             {
-                if (info.assetBundle != null && info.assetName != null)
-                {
-                    string texKey = info.assetBundle + "+" + info.assetName;
-                    if (!thumbPool[name].ContainsKey(texKey))
-                    {
-                        if (Event.current.type != EventType.Repaint)
-                        {
-                            return Texture2D.blackTexture;
-                        }
-                        thumbPool[name][texKey] = CommonLib.LoadAsset<Texture2D>(info.assetBundle, info.assetName, false, ""); ;
-                    }
-                    return thumbPool[name][texKey];
-                }
-                else
-                {
-                    return Texture2D.blackTexture;
-                }
+                return GetSelectorThumbTexture(name, info);
             }
 
             void DrawThumbSelectorRow(CustomSelectInfo info, int selectedId, float rowThumbVSpace, float rowThumbBtnWidth, Func<CustomSelectInfo, Texture2D> loadThumbTex, Action<int> changeId)
@@ -1703,10 +3213,16 @@ namespace StudioCharaEditor
                 GUILayout.Box(tex, GUILayout.Width(thumbSizeSmall), GUILayout.Height(thumbSizeSmall));
                 GUILayout.Label(string.Format("#{0}\n{1}", oldId, oldName));
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("+", GUILayout.Width(25)))
+                if (IsSelectorSidePanelOpen(selectorKey))
+                {
+                    if (GUILayout.Button("-", GUILayout.Width(25)))
                     {
-                        expandPool[name] = true;
-                        scrollPool[name] = new Vector2(0, Math.Max(0, oldIndex) * thumbRowHeight + ThumbListRowGap);
+                        CloseSelectorSidePanel();
+                    }
+                }
+                else if (GUILayout.Button("+", GUILayout.Width(25)))
+                    {
+                        OpenSelectorSidePanel(chaCtrl, name, dInfo, oldIndex, thumbList, thumbRowHeight);
                     }
                 if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
                     onChangeId((int)dInfo.RevertValue);
@@ -1733,13 +3249,22 @@ namespace StudioCharaEditor
                 else
                 {
                     // + button
-                    if (GUILayout.Button("+", GUILayout.Width(25)))
+                    if (IsSelectorSidePanelOpen(selectorKey))
                     {
-                        expandPool[name] = true;
+                        if (GUILayout.Button("-", GUILayout.Width(25)))
+                        {
+                            CloseSelectorSidePanel();
+                        }
+                    }
+                    else if (GUILayout.Button("+", GUILayout.Width(25)))
+                    {
                         if (thumbList)
-                            scrollPool[name] = new Vector2(0, Math.Max(0, oldIndex) * thumbRowHeight + ThumbListRowGap);
+                            OpenSelectorSidePanel(chaCtrl, name, dInfo, oldIndex, thumbList, thumbRowHeight);
                         else
+                        {
+                            expandPool[name] = true;
                             scrollPool[name] = new Vector2(0, oldIndex * (20 + 4) + 4);
+                        }
                     }
                 }
                 // R button
@@ -1773,6 +3298,7 @@ namespace StudioCharaEditor
                 int filteredCount = inSearching ? (filteredIndices?.Count ?? 0) : infoLst.Count;
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(" ", GUILayout.Width(namew));
+                Vector2 oldScroll = scrollPool[name];
                 scrollPool[name] = GUILayout.BeginScrollView(scrollPool[name], GUI.skin.box, GUILayout.MinHeight(thumbListMinH), GUILayout.MaxHeight(thumbListMaxH));
                 if (thumbList)
                 {
@@ -1834,6 +3360,7 @@ namespace StudioCharaEditor
                     }
                 }
                 GUILayout.EndScrollView();
+                TrackSelectorScroll(oldScroll, scrollPool[name]);
                 GUILayout.EndHorizontal();
             }
         }
@@ -2171,6 +3698,7 @@ namespace StudioCharaEditor
 
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(LC(slideName), GUILayout.Width(namew));
+                DrawAbmxTimelineButton(chaCtrl, name, slideName, dInfo, i);
                 string txtV;
                 int inputw;
                 if (preciseMode)
@@ -2650,12 +4178,143 @@ namespace StudioCharaEditor
             return infoList;
         }
 
+        private Texture2D GetSelectorThumbTexture(string name, CustomSelectInfo info)
+        {
+            if (info == null || info.assetBundle == null || info.assetName == null)
+            {
+                return Texture2D.blackTexture;
+            }
+
+            if (!thumbPool.ContainsKey(name))
+            {
+                thumbPool[name] = new Dictionary<string, Texture2D>();
+            }
+
+            string texKey = info.assetBundle + "+" + info.assetName;
+            if (!thumbPool[name].ContainsKey(texKey))
+            {
+                if (IsSelectorThumbnailLoadPaused() || !CanLoadSelectorThumbnailThisFrame())
+                {
+                    return Texture2D.blackTexture;
+                }
+                thumbPool[name][texKey] = CommonLib.LoadAsset<Texture2D>(info.assetBundle, info.assetName, false, "");
+            }
+            return thumbPool[name][texKey];
+        }
+
+        private void TrackSelectorScroll(Vector2 oldScroll, Vector2 newScroll)
+        {
+            if ((newScroll - oldScroll).sqrMagnitude > SelectorScrollChangeEpsilon)
+            {
+                selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
+            }
+        }
+
+        private bool IsSelectorThumbnailLoadPaused()
+        {
+            Event evt = Event.current;
+            return evt.type == EventType.MouseDrag ||
+                   evt.type == EventType.ScrollWheel ||
+                   Time.realtimeSinceStartup < selectorThumbLoadPauseUntil;
+        }
+
+        private bool CanLoadSelectorThumbnailThisFrame()
+        {
+            if (Event.current.type != EventType.Repaint)
+            {
+                return false;
+            }
+
+            if (selectorThumbLoadFrame != Time.frameCount)
+            {
+                selectorThumbLoadFrame = Time.frameCount;
+                selectorThumbLoadsThisFrame = 0;
+            }
+
+            if (selectorThumbLoadsThisFrame >= MaxSelectorThumbLoadsPerFrame)
+            {
+                return false;
+            }
+
+            selectorThumbLoadsThisFrame++;
+            return true;
+        }
+
+        private int GetSelectorIndex(string selectorKey, List<CustomSelectInfo> infoList, int id, out string displayName)
+        {
+            displayName = "!!Unknown!!";
+            if (infoList == null)
+            {
+                return -1;
+            }
+
+            if (selectorIndexPool.TryGetValue(selectorKey, out Dictionary<int, int> indexById) &&
+                indexById.TryGetValue(id, out int indexed) &&
+                indexed >= 0 &&
+                indexed < infoList.Count)
+            {
+                displayName = infoList[indexed].name;
+                return indexed;
+            }
+
+            for (int i = 0; i < infoList.Count; i++)
+            {
+                if (infoList[i].id == id)
+                {
+                    displayName = infoList[i].name;
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
         private void ClearSelectorCache()
         {
             selectorListPool.Clear();
             selectorIndexPool.Clear();
             selectorRenderRangePool.Clear();
             selectorSearchPool.Clear();
+
+            if (selectorSidePanel != null)
+            {
+                selectorSidePanel.FolderInfoCount = -1;
+                selectorSidePanel.FolderFavoriteVersion = -1;
+                selectorSidePanel.FolderCustomVersion = -1;
+                selectorSidePanel.Folders?.Clear();
+            }
+        }
+
+        private void ClearSelectorRuntimeCache(string selectorKey)
+        {
+            if (string.IsNullOrEmpty(selectorKey))
+            {
+                selectorRenderRangePool.Clear();
+                selectorSearchPool.Clear();
+                return;
+            }
+
+            RemoveSelectorCacheKeys(selectorRenderRangePool, selectorKey);
+            RemoveSelectorCacheKeys(selectorSearchPool, selectorKey);
+        }
+
+        private static void RemoveSelectorCacheKeys<TValue>(Dictionary<string, TValue> cache, string selectorKey)
+        {
+            if (cache == null || cache.Count == 0)
+            {
+                return;
+            }
+
+            string prefix = selectorKey + "|";
+            List<string> keysToRemove = cache.Keys
+                .Where(key => string.Equals(key, selectorKey, StringComparison.Ordinal) ||
+                              key.StartsWith(prefix, StringComparison.Ordinal))
+                .ToList();
+
+            for (int i = 0; i < keysToRemove.Count; i++)
+            {
+                cache.Remove(keysToRemove[i]);
+            }
         }
 
         private static int GetFilteredSelectorCount(List<CustomSelectInfo> infoList, bool inSearching, string searchText)
