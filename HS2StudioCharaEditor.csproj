@@ -5,16 +5,20 @@
     <RootNamespace>StudioCharaEditor</RootNamespace>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="HS2_BoobSettings">
       <HintPath>libdll\HS2_BoobSettings.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="MoreAccessories">
       <HintPath>libdll\MoreAccessories.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="PushUpAI">
       <HintPath>libdll\PushUpAI.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />

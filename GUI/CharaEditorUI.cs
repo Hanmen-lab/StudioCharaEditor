@@ -145,8 +145,7 @@ namespace StudioCharaEditor
         private const float SelectorFavoriteButtonWidth = 30f;
         private static readonly string[] CardSaveExtendedDataIdsToReset =
         {
-            "orange.spork.advikplugin",
-            "com.meinabox.MeinaPlugin"
+            "orange.spork.advikplugin"
         };
         private readonly Dictionary<string, PendingColorChange> pendingColorChanges = new Dictionary<string, PendingColorChange>();
         private readonly HashSet<string> selectorFavoriteKeys = new HashSet<string>();
@@ -302,6 +301,7 @@ namespace StudioCharaEditor
                     }
                 }
 
+                ResetForSavedCard();
                 ExtendedSave.CardBeingSaved += OnCardBeingSaved;
             }
 

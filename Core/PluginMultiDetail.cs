@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using AIChara;
 using UnityEngine;
@@ -10,24 +11,28 @@ namespace StudioCharaEditor
     {
         private const string ControllerTypeName = "OptimizedFusionMod.MultiDetailMod.MultiDetailController";
         private const string DetailTargetTypeName = "OptimizedFusionMod.MultiDetailMod.DetailTarget";
-        private const string PluginTypeName = "OptimizedFusionMod.MultiDetailMod.MultiDetailPlugin";
+        private const string PatchesTypeName = "OptimizedFusionMod.MultiDetailMod.MultiDetailPatches";
         private const string AssemblyName = "MultiDetailMod";
         private const string FaceDetailKey = "Face#FaceType#FaceDetailType";
         private const string BodyDetailKey = "Body#Skin#DetailType";
+        private const int DeferredFullBlendFrames = 18;
         internal const int SlotCount = 3;
 
         private static bool initialized;
         private static Type controllerType;
         private static Type detailTargetType;
-        private static Type pluginType;
         private static MethodInfo getIdsMethod;
         private static MethodInfo getPowersMethod;
         private static MethodInfo markBlendDirtyMethod;
         private static MethodInfo applyNativeMethod;
         private static MethodInfo applyPowerOnlyMethod;
-        private static MethodInfo refreshStudioUiMethod;
+        private static MethodInfo setPowerMethod;
+        private static MethodInfo applyFullBlendMethod;
+        private static MethodInfo getExternalTexturesMethod;
+        private static FieldInfo pendingBlendsField;
         private static object faceTarget;
         private static object bodyTarget;
+        private static readonly Dictionary<string, int> deferredFullBlendVersions = new Dictionary<string, int>();
 
         internal static bool IsAvailable
         {
@@ -64,6 +69,8 @@ namespace StudioCharaEditor
                 IList ids = GetIds(controller, target);
                 IList powers = GetPowers(controller, target);
                 SeedFromNativeDetailIfNeeded(chaCtrl, body, ids, powers);
+                TrimTrailingEmptySlots(ids, powers);
+                SyncPowerCount(ids, powers);
                 return slotIndex < ids.Count && ids[slotIndex] is int id ? id : 0;
             }
             catch (Exception ex)
@@ -90,8 +97,12 @@ namespace StudioCharaEditor
                 IList ids = GetIds(controller, target);
                 IList powers = GetPowers(controller, target);
                 SeedFromNativeDetailIfNeeded(chaCtrl, body, ids, powers);
+                TrimTrailingEmptySlots(ids, powers);
                 SyncPowerCount(ids, powers);
-                return slotIndex < powers.Count && powers[slotIndex] is float power ? power : 1f;
+                return slotIndex < ids.Count && ids[slotIndex] is int id && id != 0 &&
+                       slotIndex < powers.Count && powers[slotIndex] is float power
+                    ? power
+                    : 1f;
             }
             catch (Exception ex)
             {
@@ -122,18 +133,60 @@ namespace StudioCharaEditor
                 IList ids = GetIds(controller, target);
                 IList powers = GetPowers(controller, target);
                 SeedFromNativeDetailIfNeeded(chaCtrl, body, ids, powers);
-                EnsureSlotCapacity(ids, powers, slotIndex + 1);
-                ids[slotIndex] = id;
-                if (!(powers[slotIndex] is float))
+                TrimTrailingEmptySlots(ids, powers);
+                SyncPowerCount(ids, powers);
+
+                bool changed = false;
+                if (id == 0)
                 {
-                    powers[slotIndex] = 1f;
+                    if (slotIndex < ids.Count && ids[slotIndex] is int oldId && oldId != 0)
+                    {
+                        RemoveExternalTexture(controller, target, oldId);
+                        ids[slotIndex] = 0;
+                        if (slotIndex < powers.Count)
+                        {
+                            powers[slotIndex] = 1f;
+                        }
+                        changed = true;
+                    }
+                }
+                else
+                {
+                    EnsureSlotCapacity(ids, powers, slotIndex + 1);
+                    for (int i = 0; i < ids.Count; i++)
+                    {
+                        if (i != slotIndex && ids[i] is int existingId && existingId == id)
+                        {
+                            ids[i] = 0;
+                            if (i < powers.Count)
+                            {
+                                powers[i] = 1f;
+                            }
+                            changed = true;
+                        }
+                    }
+
+                    int previousId = ids[slotIndex] is int currentId ? currentId : 0;
+                    if (previousId != id)
+                    {
+                        RemoveExternalTexture(controller, target, previousId);
+                        ids[slotIndex] = id;
+                        powers[slotIndex] = 1f;
+                        changed = true;
+                    }
                 }
 
                 TrimTrailingEmptySlots(ids, powers);
                 SyncPowerCount(ids, powers);
-                markBlendDirtyMethod?.Invoke(controller, new[] { target });
+                if (!changed)
+                {
+                    return;
+                }
+
+                MarkBlendDirty(controller, target);
                 applyNativeMethod?.Invoke(controller, new[] { target });
-                refreshStudioUiMethod?.Invoke(null, null);
+                ApplyFullBlend(chaCtrl, body, true);
+                ScheduleFullBlendWhenReady(chaCtrl, body, true);
             }
             catch (Exception ex)
             {
@@ -160,12 +213,32 @@ namespace StudioCharaEditor
                 IList ids = GetIds(controller, target);
                 IList powers = GetPowers(controller, target);
                 SeedFromNativeDetailIfNeeded(chaCtrl, body, ids, powers);
-                EnsureSlotCapacity(ids, powers, slotIndex + 1);
-                powers[slotIndex] = value;
                 TrimTrailingEmptySlots(ids, powers);
                 SyncPowerCount(ids, powers);
-                markBlendDirtyMethod?.Invoke(controller, new[] { target });
-                applyPowerOnlyMethod?.Invoke(controller, new[] { target });
+                if (slotIndex >= ids.Count || !(ids[slotIndex] is int id) || id == 0)
+                {
+                    return;
+                }
+
+                float oldPower = slotIndex < powers.Count && powers[slotIndex] is float power ? power : 1f;
+                if (Mathf.Approximately(oldPower, value))
+                {
+                    return;
+                }
+
+                InvokeControllerSetPower(controller, slotIndex, value, target);
+                if (CountActiveIds(ids) > 1)
+                {
+                    ScheduleFullBlendWhenReady(chaCtrl, body, true);
+                }
+                else
+                {
+                    applyPowerOnlyMethod?.Invoke(controller, new[] { target });
+                    if (IsBlendPending(chaCtrl, body))
+                    {
+                        ScheduleFullBlendWhenReady(chaCtrl, body, true);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -182,7 +255,8 @@ namespace StudioCharaEditor
                        getIdsMethod != null &&
                        getPowersMethod != null &&
                        applyNativeMethod != null &&
-                       applyPowerOnlyMethod != null;
+                       applyPowerOnlyMethod != null &&
+                       applyFullBlendMethod != null;
             }
 
             controllerType = FindType(ControllerTypeName);
@@ -197,13 +271,22 @@ namespace StudioCharaEditor
             markBlendDirtyMethod = controllerType.GetMethod("MarkBlendDirty", BindingFlags.Instance | BindingFlags.Public, null, new[] { detailTargetType }, null);
             applyNativeMethod = controllerType.GetMethod("ApplyNative", BindingFlags.Instance | BindingFlags.Public, null, new[] { detailTargetType }, null);
             applyPowerOnlyMethod = controllerType.GetMethod("ApplyPowerOnly", BindingFlags.Instance | BindingFlags.Public, null, new[] { detailTargetType }, null);
-            if (getIdsMethod == null || getPowersMethod == null || applyNativeMethod == null || applyPowerOnlyMethod == null)
+            getExternalTexturesMethod = controllerType.GetMethod("GetExternalTextures", BindingFlags.Instance | BindingFlags.Public, null, new[] { detailTargetType }, null);
+            MethodInfo controllerSetPowerMethod = controllerType.GetMethod("SetPower", BindingFlags.Instance | BindingFlags.Public, null, new[] { typeof(int), typeof(float), detailTargetType }, null);
+            Type patchesType = FindType(PatchesTypeName);
+            applyFullBlendMethod = patchesType?.GetMethod("ApplyMultiDetailFull", BindingFlags.Static | BindingFlags.Public, null, new[] { typeof(ChaControl), typeof(Material), detailTargetType }, null);
+            pendingBlendsField = patchesType?.GetField("_pendingBlends", BindingFlags.Static | BindingFlags.NonPublic);
+            if (getIdsMethod == null ||
+                getPowersMethod == null ||
+                applyNativeMethod == null ||
+                applyPowerOnlyMethod == null ||
+                applyFullBlendMethod == null ||
+                controllerSetPowerMethod == null)
             {
                 return false;
             }
 
-            pluginType = FindType(PluginTypeName);
-            refreshStudioUiMethod = pluginType?.GetMethod("RefreshStudioUI", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+            setPowerMethod = controllerSetPowerMethod;
             faceTarget = Enum.Parse(detailTargetType, "Face");
             bodyTarget = Enum.Parse(detailTargetType, "Body");
             initialized = true;
@@ -300,6 +383,133 @@ namespace StudioCharaEditor
             return getPowersMethod.Invoke(controller, new[] { target }) as IList;
         }
 
+        private static void InvokeControllerSetPower(object controller, int slotIndex, float value, object target)
+        {
+            if (setPowerMethod != null)
+            {
+                setPowerMethod.Invoke(controller, new[] { (object)slotIndex, value, target });
+                return;
+            }
+
+            IList powers = GetPowers(controller, target);
+            if (slotIndex >= 0 && slotIndex < powers.Count)
+            {
+                powers[slotIndex] = value;
+                MarkBlendDirty(controller, target);
+            }
+        }
+
+        private static void MarkBlendDirty(object controller, object target)
+        {
+            markBlendDirtyMethod?.Invoke(controller, new[] { target });
+        }
+
+        private static void ApplyFullBlend(ChaControl chaCtrl, bool body, bool forceDirty)
+        {
+            if (chaCtrl == null || !EnsureInitialized())
+            {
+                return;
+            }
+
+            object controller = GetOrCreateController(chaCtrl);
+            object target = body ? bodyTarget : faceTarget;
+            if (forceDirty)
+            {
+                MarkBlendDirty(controller, target);
+            }
+
+            Material material = GetTargetMaterial(chaCtrl, body);
+            if (material == null)
+            {
+                return;
+            }
+
+            applyFullBlendMethod?.Invoke(null, new object[] { chaCtrl, material, target });
+        }
+
+        private static void ScheduleFullBlendWhenReady(ChaControl chaCtrl, bool body, bool forceDirty)
+        {
+            if (chaCtrl == null)
+            {
+                return;
+            }
+
+            string key = GetDeferredBlendKey(chaCtrl, body);
+            deferredFullBlendVersions.TryGetValue(key, out int oldVersion);
+            int version = oldVersion + 1;
+            deferredFullBlendVersions[key] = version;
+            CharaEditorMgr mgr = CharaEditorMgr.Instance;
+            if (mgr == null)
+            {
+                ApplyFullBlend(chaCtrl, body, forceDirty);
+                return;
+            }
+
+            mgr.RunAfterFrames(DeferredFullBlendFrames, () => ApplyFullBlendWhenReady(chaCtrl, body, forceDirty, key, version, 0));
+        }
+
+        private static void ApplyFullBlendWhenReady(ChaControl chaCtrl, bool body, bool forceDirty, string key, int version, int attempt)
+        {
+            if (!deferredFullBlendVersions.TryGetValue(key, out int currentVersion) || currentVersion != version)
+            {
+                return;
+            }
+
+            if (IsBlendPending(chaCtrl, body) && attempt < 20)
+            {
+                CharaEditorMgr.Instance?.RunAfterFrames(DeferredFullBlendFrames, () => ApplyFullBlendWhenReady(chaCtrl, body, forceDirty, key, version, attempt + 1));
+                return;
+            }
+
+            deferredFullBlendVersions.Remove(key);
+            ApplyFullBlend(chaCtrl, body, forceDirty);
+        }
+
+        private static string GetDeferredBlendKey(ChaControl chaCtrl, bool body)
+        {
+            int id = chaCtrl != null ? ((UnityEngine.Object)chaCtrl).GetInstanceID() : 0;
+            return id + "|" + (body ? "Body" : "Face");
+        }
+
+        private static bool IsBlendPending(ChaControl chaCtrl, bool body)
+        {
+            if (chaCtrl == null || pendingBlendsField == null)
+            {
+                return false;
+            }
+
+            string key = ((UnityEngine.Object)chaCtrl).GetInstanceID() + "_" + (body ? "Body" : "Face");
+            if (!(pendingBlendsField.GetValue(null) is IEnumerable pending))
+            {
+                return false;
+            }
+
+            foreach (object item in pending)
+            {
+                if (string.Equals(item as string, key, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static Material GetTargetMaterial(ChaControl chaCtrl, bool body)
+        {
+            if (chaCtrl == null)
+            {
+                return null;
+            }
+
+            if (body)
+            {
+                return chaCtrl.customTexCtrlBody?.matDraw ?? chaCtrl.customMatBody;
+            }
+
+            return chaCtrl.customTexCtrlFace?.matDraw ?? chaCtrl.customMatFace;
+        }
+
         private static void SeedFromNativeDetailIfNeeded(ChaControl chaCtrl, bool body, IList ids, IList powers)
         {
             if (chaCtrl == null || ids == null || powers == null || ids.Count > 0)
@@ -353,6 +563,38 @@ namespace StudioCharaEditor
                 {
                     powers.RemoveAt(powers.Count - 1);
                 }
+            }
+        }
+
+        private static int CountActiveIds(IList ids)
+        {
+            int count = 0;
+            if (ids == null)
+            {
+                return count;
+            }
+
+            for (int i = 0; i < ids.Count; i++)
+            {
+                if (ids[i] is int id && id != 0)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static void RemoveExternalTexture(object controller, object target, int id)
+        {
+            if (id >= 0 || getExternalTexturesMethod == null)
+            {
+                return;
+            }
+
+            if (getExternalTexturesMethod.Invoke(controller, new[] { target }) is IDictionary externalTextures)
+            {
+                externalTextures.Remove(id);
             }
         }
 
