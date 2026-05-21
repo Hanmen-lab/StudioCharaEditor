@@ -149,6 +149,19 @@ namespace StudioCharaEditor
         }
     }
 
+    class CharaSliderDetailDefine : CharaDetailDefine
+    {
+        public float MinValue = -1f;
+        public float MaxValue = 2f;
+        public float StepSmall = 0.01f;
+        public float StepLarge = 0.1f;
+
+        public CharaSliderDetailDefine()
+        {
+            base.Type = CharaDetailDefineType.SLIDER;
+        }
+    }
+
     class CharaIntStatusDetailDefine : CharaDetailDefine
     {
         public int[] IntStatus = new int[] { };
@@ -296,14 +309,6 @@ namespace StudioCharaEditor
             cec.SetPushUpBreastSoftness(value);
         }
         
-        public static void updateClothType(ChaControl chaCtrl, int id, int clothIndex)
-        {
-            chaCtrl.nowCoordinate.clothes.parts[clothIndex].id = id;
-            chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].id = id;
-            chaCtrl.ChangeClothes(clothIndex, id, false);
-            PluginHooahComponents.ScheduleRebindDickColliders(chaCtrl);
-        }
-
         public static IEnumerator updateClothTypeAsync(ChaControl chaCtrl, int id, int clothIndex, string clothName, CharaEditorController cec)
         {
             chaCtrl.nowCoordinate.clothes.parts[clothIndex].id = id;
@@ -633,6 +638,54 @@ namespace StudioCharaEditor
             },
             new CharaDetailDefine
             {
+                Key = "Body#Skin#MultiDetail 1",
+                Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetSlot(chaCtrl, true, 0); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetSlot(chaCtrl, true, 0, (int)v); },
+                SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_b : ChaListDefine.CategoryNo.ft_detail_b, ChaListDefine.KeyType.Unknown); },
+            },
+            new CharaSliderDetailDefine
+            {
+                Key = "Body#Skin#MultiDetail 1 Power",
+                MinValue = 0f,
+                MaxValue = 3f,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetPower(chaCtrl, true, 0); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetPower(chaCtrl, true, 0, (float)v); },
+            },
+            new CharaDetailDefine
+            {
+                Key = "Body#Skin#MultiDetail 2",
+                Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetSlot(chaCtrl, true, 1); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetSlot(chaCtrl, true, 1, (int)v); },
+                SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_b : ChaListDefine.CategoryNo.ft_detail_b, ChaListDefine.KeyType.Unknown); },
+            },
+            new CharaSliderDetailDefine
+            {
+                Key = "Body#Skin#MultiDetail 2 Power",
+                MinValue = 0f,
+                MaxValue = 3f,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetPower(chaCtrl, true, 1); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetPower(chaCtrl, true, 1, (float)v); },
+            },
+            new CharaDetailDefine
+            {
+                Key = "Body#Skin#MultiDetail 3",
+                Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetSlot(chaCtrl, true, 2); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetSlot(chaCtrl, true, 2, (int)v); },
+                SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_b : ChaListDefine.CategoryNo.ft_detail_b, ChaListDefine.KeyType.Unknown); },
+            },
+            new CharaSliderDetailDefine
+            {
+                Key = "Body#Skin#MultiDetail 3 Power",
+                MinValue = 0f,
+                MaxValue = 3f,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetPower(chaCtrl, true, 2); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetPower(chaCtrl, true, 2, (float)v); },
+            },
+            new CharaDetailDefine
+            {
                 Key = "Body#Skin#SkinColor",
                 Type = CharaDetailDefine.CharaDetailDefineType.COLOR,
                 Get = (chaCtrl) => { return chaCtrl.fileBody.skinColor; },
@@ -929,6 +982,54 @@ namespace StudioCharaEditor
                 Get = (chaCtrl) => { return chaCtrl.fileFace.detailId; },
                 Set = (chaCtrl, v) => { chaCtrl.fileFace.detailId = (int)v; chaCtrl.ChangeFaceDetailKind(); },
                 SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_f : ChaListDefine.CategoryNo.ft_detail_f, ChaListDefine.KeyType.Unknown); },
+            },
+            new CharaDetailDefine
+            {
+                Key = "Face#FaceType#MultiDetail 1",
+                Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetSlot(chaCtrl, false, 0); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetSlot(chaCtrl, false, 0, (int)v); },
+                SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_f : ChaListDefine.CategoryNo.ft_detail_f, ChaListDefine.KeyType.Unknown); },
+            },
+            new CharaSliderDetailDefine
+            {
+                Key = "Face#FaceType#MultiDetail 1 Power",
+                MinValue = 0f,
+                MaxValue = 3f,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetPower(chaCtrl, false, 0); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetPower(chaCtrl, false, 0, (float)v); },
+            },
+            new CharaDetailDefine
+            {
+                Key = "Face#FaceType#MultiDetail 2",
+                Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetSlot(chaCtrl, false, 1); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetSlot(chaCtrl, false, 1, (int)v); },
+                SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_f : ChaListDefine.CategoryNo.ft_detail_f, ChaListDefine.KeyType.Unknown); },
+            },
+            new CharaSliderDetailDefine
+            {
+                Key = "Face#FaceType#MultiDetail 2 Power",
+                MinValue = 0f,
+                MaxValue = 3f,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetPower(chaCtrl, false, 1); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetPower(chaCtrl, false, 1, (float)v); },
+            },
+            new CharaDetailDefine
+            {
+                Key = "Face#FaceType#MultiDetail 3",
+                Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetSlot(chaCtrl, false, 2); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetSlot(chaCtrl, false, 2, (int)v); },
+                SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_f : ChaListDefine.CategoryNo.ft_detail_f, ChaListDefine.KeyType.Unknown); },
+            },
+            new CharaSliderDetailDefine
+            {
+                Key = "Face#FaceType#MultiDetail 3 Power",
+                MinValue = 0f,
+                MaxValue = 3f,
+                Get = (chaCtrl) => { return PluginMultiDetail.GetPower(chaCtrl, false, 2); },
+                Set = (chaCtrl, v) => { PluginMultiDetail.SetPower(chaCtrl, false, 2, (float)v); },
             },
             // Face#ShapeWhole
             new CharaDetailDefine

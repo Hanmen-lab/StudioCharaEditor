@@ -3,6 +3,7 @@ using BepInEx.Logging;
 using BepInEx;
 using CharaCustom;
 using EpicToonFX;
+using ExtensibleSaveFormat;
 using HarmonyLib;
 using KKAPI.Utilities;
 using Studio;
@@ -142,6 +143,11 @@ namespace StudioCharaEditor
         private const string SelectorItemKeyVersion = "v3";
         private const string SelectorFoldersXmlRootName = "studioCharaEditorFolders";
         private const float SelectorFavoriteButtonWidth = 30f;
+        private static readonly string[] CardSaveExtendedDataIdsToReset =
+        {
+            "orange.spork.advikplugin",
+            "com.meinabox.MeinaPlugin"
+        };
         private readonly Dictionary<string, PendingColorChange> pendingColorChanges = new Dictionary<string, PendingColorChange>();
         private readonly HashSet<string> selectorFavoriteKeys = new HashSet<string>();
         private readonly Dictionary<string, List<SelectorCustomFolder>> selectorCustomFoldersByScope = new Dictionary<string, List<SelectorCustomFolder>>();
@@ -267,6 +273,134 @@ namespace StudioCharaEditor
             public CustomSelectInfo Item;
             public string NewFolderName = string.Empty;
             public string RenameFolderName = string.Empty;
+        }
+
+        private sealed class TemporaryCleanCardSave : IDisposable
+        {
+            private readonly ChaFile chaFile;
+            private readonly ChaFileStatus statusSnapshot;
+            private readonly Dictionary<string, PluginData> extendedDataSnapshot = new Dictionary<string, PluginData>();
+            private readonly HashSet<string> extendedDataHadKey = new HashSet<string>();
+            private bool disposed;
+
+            public TemporaryCleanCardSave(ChaFile chaFile)
+            {
+                this.chaFile = chaFile;
+                if (chaFile?.status != null)
+                {
+                    statusSnapshot = new ChaFileStatus();
+                    CopyFaceExpressionStatus(statusSnapshot, chaFile.status);
+                }
+
+                Dictionary<string, PluginData> allExtendedData = chaFile != null ? ExtendedSave.GetAllExtendedData(chaFile) : null;
+                foreach (string id in CardSaveExtendedDataIdsToReset)
+                {
+                    if (allExtendedData != null && allExtendedData.TryGetValue(id, out PluginData data))
+                    {
+                        extendedDataHadKey.Add(id);
+                        extendedDataSnapshot[id] = data;
+                    }
+                }
+
+                ExtendedSave.CardBeingSaved += OnCardBeingSaved;
+            }
+
+            public void Dispose()
+            {
+                if (disposed)
+                {
+                    return;
+                }
+
+                disposed = true;
+                ExtendedSave.CardBeingSaved -= OnCardBeingSaved;
+                Restore();
+            }
+
+            private void OnCardBeingSaved(ChaFile file)
+            {
+                if (!ReferenceEquals(file, chaFile))
+                {
+                    return;
+                }
+
+                ResetForSavedCard();
+            }
+
+            private void ResetForSavedCard()
+            {
+                if (chaFile?.status != null)
+                {
+                    ChaFileStatus defaults = new ChaFileStatus();
+                    CopyFaceExpressionStatus(chaFile.status, defaults);
+                }
+
+                foreach (string id in CardSaveExtendedDataIdsToReset)
+                {
+                    ExtendedSave.SetExtendedDataById(chaFile, id, null);
+                }
+            }
+
+            private void Restore()
+            {
+                if (chaFile == null)
+                {
+                    return;
+                }
+
+                if (statusSnapshot != null && chaFile.status != null)
+                {
+                    CopyFaceExpressionStatus(chaFile.status, statusSnapshot);
+                }
+
+                Dictionary<string, PluginData> allExtendedData = ExtendedSave.GetAllExtendedData(chaFile);
+                foreach (string id in CardSaveExtendedDataIdsToReset)
+                {
+                    if (extendedDataHadKey.Contains(id))
+                    {
+                        ExtendedSave.SetExtendedDataById(chaFile, id, extendedDataSnapshot[id]);
+                    }
+                    else if (allExtendedData != null)
+                    {
+                        allExtendedData.Remove(id);
+                    }
+                }
+            }
+
+            private static void CopyFaceExpressionStatus(ChaFileStatus target, ChaFileStatus source)
+            {
+                if (target == null || source == null)
+                {
+                    return;
+                }
+
+                target.eyebrowPtn = source.eyebrowPtn;
+                target.eyebrowOpenMax = source.eyebrowOpenMax;
+                target.eyesPtn = source.eyesPtn;
+                target.eyesOpenMax = source.eyesOpenMax;
+                target.eyesBlink = source.eyesBlink;
+                target.eyesYure = source.eyesYure;
+                target.mouthPtn = source.mouthPtn;
+                target.mouthOpenMin = source.mouthOpenMin;
+                target.mouthOpenMax = source.mouthOpenMax;
+                target.mouthFixed = source.mouthFixed;
+                target.mouthAdjustWidth = source.mouthAdjustWidth;
+                target.tongueState = source.tongueState;
+                target.eyesLookPtn = source.eyesLookPtn;
+                target.eyesTargetType = source.eyesTargetType;
+                target.eyesTargetAngle = source.eyesTargetAngle;
+                target.eyesTargetRange = source.eyesTargetRange;
+                target.eyesTargetRate = source.eyesTargetRate;
+                target.neckLookPtn = source.neckLookPtn;
+                target.neckTargetType = source.neckTargetType;
+                target.neckTargetAngle = source.neckTargetAngle;
+                target.neckTargetRange = source.neckTargetRange;
+                target.neckTargetRate = source.neckTargetRate;
+                target.disableMouthShapeMask = source.disableMouthShapeMask;
+                target.hohoAkaRate = source.hohoAkaRate;
+                target.tearsRate = source.tearsRate;
+                target.hideEyesHighlight = source.hideEyesHighlight;
+            }
         }
 
         private SelectorSidePanel selectorSidePanel;
@@ -1657,100 +1791,6 @@ namespace StudioCharaEditor
             }
 
             return itemKeys;
-        }
-
-        private void MigrateSelectorCustomFolderKeys(SelectorSidePanel panel, List<CustomSelectInfo> infoList)
-        {
-            if (panel == null || infoList == null || infoList.Count == 0)
-            {
-                return;
-            }
-
-            string scope = GetSelectorFavoriteScope(panel.SelectorKey);
-            bool changed = false;
-            foreach (SelectorCustomFolder folder in GetCustomFolders(scope))
-            {
-                changed |= MigrateSelectorCustomFolderKeys(folder, panel.ChaCtrl, infoList);
-            }
-
-            if (!changed)
-            {
-                return;
-            }
-
-            selectorCustomFolderVersion++;
-            panel.FolderInfoCount = -1;
-            selectorRenderRangePool.Clear();
-            selectorSearchPool.Clear();
-            SaveSelectorCustomFolders();
-        }
-
-        private static bool MigrateSelectorCustomFolderKeys(SelectorCustomFolder folder, ChaControl chaCtrl, List<CustomSelectInfo> infoList)
-        {
-            if (folder == null || infoList == null || infoList.Count == 0)
-            {
-                return false;
-            }
-
-            bool changed = false;
-            foreach (string storedKey in folder.ItemKeys.ToList())
-            {
-                if (string.IsNullOrEmpty(storedKey) || storedKey.StartsWith(SelectorItemKeyVersion + "|", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                List<string> strictMatches = GetStrictKeysMatchingStoredKey(storedKey, chaCtrl, infoList);
-                if (strictMatches.Count == 1)
-                {
-                    folder.ItemKeys.Remove(storedKey);
-                    folder.ItemKeys.Add(strictMatches[0]);
-                    changed = true;
-                }
-            }
-
-            foreach (int legacyId in folder.LegacyItemIds.ToList())
-            {
-                List<string> strictMatches = infoList
-                    .Where(info => info != null && info.id == legacyId)
-                    .Select(info => GetSelectorItemKey(chaCtrl, info))
-                    .Where(key => !string.IsNullOrEmpty(key))
-                    .Distinct(StringComparer.Ordinal)
-                    .Take(2)
-                    .ToList();
-
-                if (strictMatches.Count == 1)
-                {
-                    folder.LegacyItemIds.Remove(legacyId);
-                    folder.ItemKeys.Add(strictMatches[0]);
-                    changed = true;
-                }
-            }
-
-            return changed;
-        }
-
-        private static List<string> GetStrictKeysMatchingStoredKey(string storedKey, ChaControl chaCtrl, List<CustomSelectInfo> infoList)
-        {
-            List<string> matches = new List<string>();
-            for (int i = 0; i < infoList.Count; i++)
-            {
-                CustomSelectInfo info = infoList[i];
-                if (SelectorItemKeyMatches(storedKey, chaCtrl, info))
-                {
-                    string strictKey = GetSelectorItemKey(chaCtrl, info);
-                    if (!string.IsNullOrEmpty(strictKey) && !matches.Contains(strictKey))
-                    {
-                        matches.Add(strictKey);
-                        if (matches.Count > 1)
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            return matches;
         }
 
         private List<int> GetSelectedFolderIndices(SelectorSidePanel panel)
@@ -3993,6 +4033,16 @@ namespace StudioCharaEditor
             float newV = oldV;
             bool preciseMode = StudioCharaEditor.PreciseInputMode.Value;
             bool unlimitMode = StudioCharaEditor.UnlimitedSlider.Value;
+            CharaSliderDetailDefine sliderDefine = dInfo.DetailDefine as CharaSliderDetailDefine;
+            float sliderMin = sliderDefine?.MinValue ?? -1f;
+            float sliderMax = sliderDefine?.MaxValue ?? 2f;
+            float stepSmall = sliderDefine?.StepSmall ?? 0.01f;
+            float stepLarge = sliderDefine?.StepLarge ?? 0.1f;
+            if (preciseMode)
+            {
+                stepSmall /= 10f;
+                stepLarge /= 10f;
+            }
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(name), GUILayout.Width(namew));
@@ -4020,49 +4070,47 @@ namespace StudioCharaEditor
             if (preciseMode)
             {
                 if (GUILayout.Button("-0.1", GUILayout.Width(37)))
-                    newV -= 0.001f;
+                    newV -= stepLarge;
                 if (GUILayout.Button("-0.01", GUILayout.Width(43)))
-                    newV -= 0.0001f;
+                    newV -= stepSmall;
             }
             else
             {
                 if (GUILayout.Button("-10", GUILayout.Width(35)))
-                    newV -= 0.1f;
+                    newV -= stepLarge;
                 if (GUILayout.Button("-1", GUILayout.Width(30)))
-                    newV -= 0.01f;
+                    newV -= stepSmall;
             }
-            float sldMax = 2;
-            float sldMin = -1;
             if (unlimitMode)
             {
-                sldMax = Math.Max(2, newV);
-                sldMin = Math.Min(-1, newV);
+                sliderMax = Math.Max(sliderMax, newV);
+                sliderMin = Math.Min(sliderMin, newV);
             }
-            float sldV = DrawThinSlider(newV, sldMin, sldMax);
+            float sldV = DrawThinSlider(newV, sliderMin, sliderMax);
             if (sldV != newV)
                 newV = sldV;
             if (preciseMode)
             {
                 if (GUILayout.Button("+0.01", GUILayout.Width(43)))
-                    newV += 0.0001f;
+                    newV += stepSmall;
                 if (GUILayout.Button("+0.1", GUILayout.Width(37)))
-                    newV += 0.001f;
+                    newV += stepLarge;
             }
             else
             {
                 if (GUILayout.Button("+1", GUILayout.Width(30)))
-                    newV += 0.01f;
+                    newV += stepSmall;
                 if (GUILayout.Button("+10", GUILayout.Width(35)))
-                    newV += 0.1f;
+                    newV += stepLarge;
             }
             if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
                 newV = (float)dInfo.RevertValue;
             if (!unlimitMode)
             {
-                if (newV > 2)
-                    newV = 2f;
-                if (newV < -1)
-                    newV = -1f;
+                if (newV > sliderMax)
+                    newV = sliderMax;
+                if (newV < sliderMin)
+                    newV = sliderMin;
             }
             if (newV != oldV)
             {
@@ -5022,13 +5070,16 @@ namespace StudioCharaEditor
                     }
                     else
                     {
-                        if (savingTexture != null)
+                        using (new TemporaryCleanCardSave(savingChaFile))
                         {
-                            savingChaFile.pngData = savingTexture.EncodeToPNG();
-                        }
-                        string filename = Path.Combine(savingPath, savingFilename);
+                            if (savingTexture != null)
+                            {
+                                savingChaFile.pngData = savingTexture.EncodeToPNG();
+                            }
+                            string filename = Path.Combine(savingPath, savingFilename);
 
-                        Traverse.Create(savingChaFile).Method("SaveFile", new object[] { filename, 0 }).GetValue();
+                            Traverse.Create(savingChaFile).Method("SaveFile", new object[] { filename, 0 }).GetValue();
+                        }
                         StudioCharaEditor.Logger.Log(LogLevel.Message | LogLevel.Warning, string.Format("Charactor {0} saved to {1}.", savingChaFile.parameter.fullname, savingFilename));
                         guiMode = GuiModeType.MAIN;
                     }

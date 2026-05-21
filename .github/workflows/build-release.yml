@@ -4,6 +4,8 @@ on:
     branches:
       - master
       - main
+    tags:
+      - v*
   pull_request:
     branches:
       - master
@@ -17,20 +19,16 @@ jobs:
         with:
           fetch-depth: 0
           
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2 
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
         with:
-          vs-version: 17.0
-          
-      - name: Setup NuGet
-        uses: nuget/setup-nuget@v2
+          dotnet-version: 8.0.x
         
       - name: Restore NuGet packages
-
-        run: nuget restore StudioCharaEditor.sln -NonInteractive -Source "https://api.nuget.org/v3/index.json;https://nuget.bepinex.dev/v3/index.json;https://pkgs.dev.azure.com/IllusionMods/IllusionMods/_packaging/IllusionMods/nuget/v3/index.json"
+        run: dotnet restore StudioCharaEditor.sln --configfile nuget.config --verbosity minimal
         
       - name: Build Solution
-        run: msbuild StudioCharaEditor.sln /p:Configuration=Release /p:Platform="Any CPU"
+        run: dotnet build StudioCharaEditor.sln --configuration Release --no-restore
         
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
