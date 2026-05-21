@@ -22,6 +22,7 @@ namespace StudioCharaEditor
         private static bool loggedClothesReloadSupport;
         private static bool installedExternalReloadPatches;
         private static bool loggedExternalReloadPatch;
+        private static readonly int[] RepairRetryFrames = { 5, 15, 30, 60, 120, 240, 360, 600 };
         private static readonly Stack<ClothesReloadState> externalReloadStates = new Stack<ClothesReloadState>();
 
         internal sealed class ControllerSnapshot
@@ -177,15 +178,10 @@ namespace StudioCharaEditor
             }
 
             RepairControllers(state);
-
-            CharaEditorMgr.Instance?.RunAfterFrames(5, () => RepairControllers(state));
-            CharaEditorMgr.Instance?.RunAfterFrames(15, () => RepairControllers(state));
-            CharaEditorMgr.Instance?.RunAfterFrames(30, () => RepairControllers(state));
-            CharaEditorMgr.Instance?.RunAfterFrames(60, () => RepairControllers(state));
-            CharaEditorMgr.Instance?.RunAfterFrames(120, () => RepairControllers(state));
-            CharaEditorMgr.Instance?.RunAfterFrames(240, () => RepairControllers(state));
-            CharaEditorMgr.Instance?.RunAfterFrames(360, () => RepairControllers(state));
-            CharaEditorMgr.Instance?.RunAfterFrames(600, () => RepairControllers(state));
+            for (int i = 0; i < RepairRetryFrames.Length; i++)
+            {
+                CharaEditorMgr.Instance?.RunAfterFrames(RepairRetryFrames[i], () => RepairControllers(state));
+            }
         }
 
         private static void BeforeExternalCharacterReload()

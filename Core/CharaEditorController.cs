@@ -337,6 +337,7 @@ namespace StudioCharaEditor
             myDetailDict = new Dictionary<string, CharaDetailInfo>();
             myDetailSet = new Dictionary<string, List<CharaDetailInfo>>();
             myUpdateSequence = new List<string>();
+            bool hasMultiDetailPlugin = PluginMultiDetail.IsAvailable;
 
             bool isDetailInCategory(string cdiKey)
             {
@@ -423,6 +424,22 @@ namespace StudioCharaEditor
             // vanilla chara detail set
             foreach (CharaDetailDefine cdd in CharaDetailSet.Details)
             {
+                if (hasMultiDetailPlugin)
+                {
+                    if (PluginMultiDetail.IsNativeDetailSelector(cdd.Key))
+                    {
+                        continue;
+                    }
+                }
+                else if (PluginMultiDetail.IsSlotDetailSelector(cdd.Key))
+                {
+                    continue;
+                }
+                else if (PluginMultiDetail.IsPowerDetailSlider(cdd.Key))
+                {
+                    continue;
+                }
+
                 if (!isDetailInCategory(cdd.Key))
                 {
                     continue;

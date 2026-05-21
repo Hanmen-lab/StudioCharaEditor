@@ -14,10 +14,12 @@ namespace StudioCharaEditor
         private const string NamespacedDickControllerTypeName = "HooahComponents.DickController";
         private const string BetterPenetrationToolsTypeName = "Core_BetterPenetration.Tools";
         private const int RebindThrottleFrames = 2;
+        private static readonly int[] RebindRetryFrames = { 1, 5, 15, 30 };
 
         private static Harmony harmony;
         private static bool attemptedBetterPenetrationPatch;
         private static bool installedBetterPenetrationPatch;
+        private static bool searchedDickControllerType;
         private static Type dickControllerType;
         private static FieldInfo dickControllerInstancesField;
         private static FieldInfo dickChainsField;
@@ -45,11 +47,19 @@ namespace StudioCharaEditor
                 return;
             }
 
-            CharaEditorMgr.Instance?.RunAfterFrames(1, () => RebindDickColliders(chaCtrl));
-            CharaEditorMgr.Instance?.RunAfterFrames(5, () => RebindDickColliders(chaCtrl));
-            CharaEditorMgr.Instance?.RunAfterFrames(15, () => RebindDickColliders(chaCtrl));
-            CharaEditorMgr.Instance?.RunAfterFrames(30, () => RebindDickColliders(chaCtrl));
-            CharaEditorMgr.Instance?.RunAfterFrames(60, () =>
+            CharaEditorMgr mgr = CharaEditorMgr.Instance;
+            if (mgr == null)
+            {
+                scheduledCharacters.Remove(chaCtrl);
+                lastRebindFrames.Remove(chaCtrl);
+                return;
+            }
+
+            for (int i = 0; i < RebindRetryFrames.Length; i++)
+            {
+                mgr.RunAfterFrames(RebindRetryFrames[i], () => RebindDickColliders(chaCtrl));
+            }
+            mgr.RunAfterFrames(60, () =>
             {
                 RebindDickColliders(chaCtrl);
                 scheduledCharacters.Remove(chaCtrl);
@@ -74,6 +84,7 @@ namespace StudioCharaEditor
 
             if (removeColliders == null || afterRemoveColliders == null)
             {
+                attemptedBetterPenetrationPatch = true;
                 return;
             }
 
@@ -271,6 +282,12 @@ namespace StudioCharaEditor
         {
             if (dickControllerType == null)
             {
+                if (searchedDickControllerType)
+                {
+                    return false;
+                }
+
+                searchedDickControllerType = true;
                 dickControllerType = FindType(DickControllerTypeName) ?? FindType(NamespacedDickControllerTypeName);
             }
             if (dickControllerType == null)
