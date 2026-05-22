@@ -10,7 +10,13 @@ namespace StudioCharaEditor
     internal static class PluginTimelineCompatibility
     {
         private const string Owner = "Studio Chara Editor";
+        private const float AvailabilityRetryInterval = 2f;
         private static bool populated;
+        private static bool populateAttempted;
+        private static bool availabilityChecked;
+        private static bool availabilityException;
+        private static bool timelineAvailable;
+        private static float lastAvailabilityCheckTime;
         private static OCIChar selectedTarget;
         private static DetailParameter selectedParameter;
 
@@ -30,11 +36,12 @@ namespace StudioCharaEditor
 
         internal static void PopulateTimeline()
         {
-            if (populated || !IsTimelineAvailable())
+            if (populated || populateAttempted || !IsTimelineAvailable())
             {
                 return;
             }
 
+            populateAttempted = true;
             try
             {
                 TimelineCompatibility.AddInterpolableModelDynamic<float, DetailParameter>(
@@ -127,24 +134,55 @@ namespace StudioCharaEditor
             }
             catch (Exception ex)
             {
+                timelineAvailable = false;
+                availabilityChecked = true;
+                availabilityException = true;
                 StudioCharaEditor.Logger?.LogWarning("Failed to register Timeline interpolables: " + ex.Message);
             }
         }
 
         internal static bool IsTimelineAvailable()
         {
+            if (availabilityChecked)
+            {
+                if (timelineAvailable || availabilityException)
+                {
+                    return timelineAvailable;
+                }
+
+                if (Time.realtimeSinceStartup - lastAvailabilityCheckTime < AvailabilityRetryInterval)
+                {
+                    return timelineAvailable;
+                }
+            }
+
+            availabilityChecked = true;
+            lastAvailabilityCheckTime = Time.realtimeSinceStartup;
             try
             {
-                return TimelineCompatibility.IsTimelineAvailable();
+                timelineAvailable = TimelineCompatibility.IsTimelineAvailable();
+                availabilityException = false;
             }
-            catch
+            catch (Exception ex)
             {
-                return false;
+                timelineAvailable = false;
+                availabilityException = true;
+                if (StudioCharaEditor.VerboseMessage?.Value == true)
+                {
+                    StudioCharaEditor.Logger?.LogWarning("Timeline compatibility unavailable: " + ex.Message);
+                }
             }
+
+            return timelineAvailable;
         }
 
         internal static bool CanSelect(OCIChar ociTarget, ChaControl chaCtrl, CharaDetailInfo detailInfo)
         {
+            if (!IsTimelineAvailable())
+            {
+                return false;
+            }
+
             PopulateTimeline();
             return populated &&
                    ociTarget != null &&
@@ -164,6 +202,11 @@ namespace StudioCharaEditor
 
         internal static bool CanSelectAbmx(OCIChar ociTarget, ChaControl chaCtrl, CharaDetailInfo detailInfo, int subSliderIndex)
         {
+            if (!IsTimelineAvailable())
+            {
+                return false;
+            }
+
             PopulateTimeline();
             return populated &&
                    ociTarget != null &&
