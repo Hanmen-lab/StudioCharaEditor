@@ -772,15 +772,18 @@ namespace StudioCharaEditor
             GUI.Label(gripRect, "///", resizeGripStyle);
         }
 
-        private void DrawSelectorResizeGrip()
+        private Rect GetSelectorResizeGripRect()
         {
-            EnsureResizeGripStyle();
-
-            Rect gripRect = new Rect(
+            return new Rect(
                 selectorWindowRect.width - ResizeGripSize - 4f,
                 selectorWindowRect.height - ResizeGripSize - 4f,
                 ResizeGripSize,
                 ResizeGripSize);
+        }
+
+        private void HandleSelectorResizeGripInput()
+        {
+            Rect gripRect = GetSelectorResizeGripRect();
             int controlId = GUIUtility.GetControlID("StudioCharaEditorSelectorResizeGrip".GetHashCode(), FocusType.Passive, gripRect);
             Event evt = Event.current;
 
@@ -804,7 +807,6 @@ namespace StudioCharaEditor
                         selectorWindowRect.height = Math.Max(SelectorMinWindowHeight, selectorResizeStartSize.y + delta.y);
                         selectorWindowHasUserSize = true;
                         selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
-                        selectorRenderRangePool.Clear();
                         evt.Use();
                     }
                     break;
@@ -817,8 +819,12 @@ namespace StudioCharaEditor
                     }
                     break;
             }
+        }
 
-            GUI.Label(gripRect, "///", resizeGripStyle);
+        private void DrawSelectorResizeGrip()
+        {
+            EnsureResizeGripStyle();
+            GUI.Label(GetSelectorResizeGripRect(), "///", resizeGripStyle);
         }
 
         private void OnGUI()
@@ -1215,6 +1221,7 @@ namespace StudioCharaEditor
                     return;
                 }
 
+                HandleSelectorResizeGripInput();
                 HandleSelectorContextMenuOutsideClick();
                 DrawSelectorSidePanel(selectorSidePanel);
                 DrawSelectorResizeGrip();
@@ -1302,7 +1309,8 @@ namespace StudioCharaEditor
             panel.Scroll = GUILayout.BeginScrollView(panel.Scroll, GUI.skin.box, GUILayout.ExpandHeight(true));
             if (gridMode)
             {
-                int maxGridRows = Math.Max(1, MaxSelectorGridCellsPerFrame / Math.Max(1, gridColumns));
+                int rowsNeededForViewport = Math.Max(1, showBefore + showAfter + 2);
+                int maxGridRows = Math.Max(rowsNeededForViewport, MaxSelectorGridCellsPerFrame / Math.Max(1, gridColumns));
                 SelectorRenderRange range = GetSelectorRenderRange(selectorFilterKey + "|grid|" + gridColumns, infoList, inSearching, panel.SearchText, rangeCount, panel.Scroll, rowHeight, showBefore, showAfter, maxGridRows);
                 DrawSelectorSideGrid(panel, infoList, filteredIndices, selectedId, filteredCount, range, gridColumns);
                 if (inSearching && searchState != null && !searchState.Complete)
