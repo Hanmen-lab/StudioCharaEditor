@@ -831,6 +831,11 @@ namespace StudioCharaEditor
         {
             if (VisibleGUI)
             {
+                float scale = StudioCharaEditor.UIScale.Value;
+                Matrix4x4 savedMatrix = GUI.matrix;
+                if (scale != 1f)
+                    GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scale, scale, 1f));
+
                 GUISkin previousSkin = GUI.skin;
                 try
                 {
@@ -868,6 +873,7 @@ namespace StudioCharaEditor
                 finally
                 {
                     GUI.skin = previousSkin;
+                    GUI.matrix = savedMatrix;
                 }
             }
         }
@@ -882,13 +888,14 @@ namespace StudioCharaEditor
                 : SelectorPanelDefaultHeight;
 
             float x = windowRect.xMax + SelectorPanelGap;
-            if (x + width > Screen.width - 4f)
+            float logicalScreenW = Screen.width / StudioCharaEditor.UIScale.Value;
+            if (x + width > logicalScreenW - 4f)
             {
                 x = windowRect.x - width - SelectorPanelGap;
             }
             if (x < 4f)
             {
-                x = Math.Max(4f, Screen.width - width - 4f);
+                x = Math.Max(4f, logicalScreenW - width - 4f);
             }
 
             selectorWindowRect = new Rect(x, windowRect.y, width, height);
@@ -909,12 +916,15 @@ namespace StudioCharaEditor
 
         private void ClampSelectorWindowToScreen()
         {
-            float maxWidth = Math.Max(SelectorMinWindowWidth, Screen.width - 8f);
-            float maxHeight = Math.Max(SelectorMinWindowHeight, Screen.height - 8f);
+            float scale = StudioCharaEditor.UIScale.Value;
+            float logicalW = Screen.width / scale;
+            float logicalH = Screen.height / scale;
+            float maxWidth = Math.Max(SelectorMinWindowWidth, logicalW - 8f);
+            float maxHeight = Math.Max(SelectorMinWindowHeight, logicalH - 8f);
             selectorWindowRect.width = Mathf.Clamp(selectorWindowRect.width, SelectorMinWindowWidth, maxWidth);
             selectorWindowRect.height = Mathf.Clamp(selectorWindowRect.height, SelectorMinWindowHeight, maxHeight);
-            selectorWindowRect.x = Mathf.Clamp(selectorWindowRect.x, 4f, Math.Max(4f, Screen.width - selectorWindowRect.width - 4f));
-            selectorWindowRect.y = Mathf.Clamp(selectorWindowRect.y, 4f, Math.Max(4f, Screen.height - selectorWindowRect.height - 4f));
+            selectorWindowRect.x = Mathf.Clamp(selectorWindowRect.x, 4f, Math.Max(4f, logicalW - selectorWindowRect.width - 4f));
+            selectorWindowRect.y = Mathf.Clamp(selectorWindowRect.y, 4f, Math.Max(4f, logicalH - selectorWindowRect.height - 4f));
         }
 
         private void Update()
