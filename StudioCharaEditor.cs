@@ -46,6 +46,7 @@ namespace StudioCharaEditor
         public static ConfigEntry<int> UIWidth { get; private set; }
         public static ConfigEntry<int> UIHeight { get; private set; }
         public static ConfigEntry<string> UILanguage { get; private set; }
+        public static ConfigEntry<float> UIScale { get; private set; }
 
         internal SimpleToolbarToggle _toolbarCharEditor;
         private Harmony harmony;
@@ -76,6 +77,10 @@ namespace StudioCharaEditor
             UIWidth = Config.Bind("GUI", "Main GUI window width", 600, "Main window width, minimum 600, set it when UI is hided.");
             UIHeight = Config.Bind("GUI", "Main GUI window height", 400, "Main window height, minimum 400, set it when UI is hided.");
             UILanguage = Config.Bind("GUI", "GUI Language", "default", "Language setting, valid setting can be found in HS2StudioCharaEditor.xml. Need reload.");
+            UIScale = Config.Bind("GUI", "UI Scale", 1.0f,
+                new ConfigDescription(
+                    "Scale of the entire UI. 1.0 = 100% (designed for 1080p). Try 1.33 for 1440p.",
+                    new AcceptableValueRange<float>(0.5f, 3.0f)));
 
             /*
             configGreeting = Config.Bind("General",   // The section under which the option is shown
