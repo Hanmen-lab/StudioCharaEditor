@@ -24,7 +24,7 @@ namespace StudioCharaEditor
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "2.5.22";
+        public const string Version = "2.5.3";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -47,6 +47,9 @@ namespace StudioCharaEditor
         public static ConfigEntry<int> UIHeight { get; private set; }
         public static ConfigEntry<string> UILanguage { get; private set; }
         public static ConfigEntry<float> UIScale { get; private set; }
+        public static ConfigEntry<bool> SelectorGridViewByDefault { get; private set; }
+        public static ConfigEntry<float> SelectorGridThumbnailSize { get; private set; }
+        public static ConfigEntry<bool> ShowSelectorGridItemNames { get; private set; }
 
         internal SimpleToolbarToggle _toolbarCharEditor;
         private Harmony harmony;
@@ -81,6 +84,12 @@ namespace StudioCharaEditor
                 new ConfigDescription(
                     "Scale of the entire UI. 1.0 = 100% (designed for 1080p). Try 1.33 for 1440p.",
                     new AcceptableValueRange<float>(0.5f, 3.0f)));
+            SelectorGridViewByDefault = Config.Bind("GUI", "Selector grid view by default", true, "Open the item selector in grid view by default instead of list view.");
+            SelectorGridThumbnailSize = Config.Bind("GUI", "Selector grid thumbnail size", 96f,
+                new ConfigDescription(
+                    "Size in pixels of each thumbnail in the selector grid view. Lower values fit more columns.",
+                    new AcceptableValueRange<float>(48f, 200f)));
+            ShowSelectorGridItemNames = Config.Bind("GUI", "Show item names in grid view", true, "Show the item name under each thumbnail in the selector grid view.");
 
             /*
             configGreeting = Config.Bind("General",   // The section under which the option is shown
