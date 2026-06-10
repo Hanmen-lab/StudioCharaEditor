@@ -120,10 +120,9 @@ namespace StudioCharaEditor
         private const float SelectorFolderRowHeight = 24f;
         private const float SelectorPanelThumbSize = 78f;
         private const float SelectorPanelButtonHeight = 40f;
-        private const float SelectorGridMinCellWidth = 96f;
-        private const float SelectorGridCellHeight = 108f;
-        private const float SelectorGridThumbSize = 76f;
         private const float SelectorGridGap = 4f;
+        private const float SelectorGridCellPadding = 2f;
+        private const float SelectorGridLabelHeight = 18f;
         private const float ThinSliderHeight = 20f;
         private const float ThinSliderTrackHeight = 2f;
         private const float ThinSliderThumbSize = 7f;
@@ -160,7 +159,7 @@ namespace StudioCharaEditor
         private int selectorFavoriteVersion;
         private int selectorCustomFolderVersion;
         private bool selectorWindowHasUserSize;
-        private SelectorViewMode selectorDefaultViewMode = SelectorViewMode.List;
+        private SelectorViewMode selectorDefaultViewMode = SelectorViewMode.Grid;
         private static readonly string[] HairSetKeys =
         {
             "Hair#BackHair",
@@ -429,6 +428,7 @@ namespace StudioCharaEditor
 
         private void Start()
         {
+            selectorDefaultViewMode = StudioCharaEditor.SelectorGridViewByDefault.Value ? SelectorViewMode.Grid : SelectorViewMode.List;
             theme = new CharaEditorTheme();
             largeLabel = new GUIStyle("label");
             largeLabel.fontSize = 16;
@@ -1300,7 +1300,7 @@ namespace StudioCharaEditor
             bool gridMode = panel.ThumbList && panel.ViewMode == SelectorViewMode.Grid;
             int gridColumns = gridMode ? GetSelectorGridColumnCount(panel) : 1;
             int rangeCount = gridMode ? GetSelectorGridRowCount(filteredCount, gridColumns) : filteredCount;
-            float rowHeight = gridMode ? SelectorGridCellHeight + SelectorGridGap : (panel.ThumbList ? SelectorPanelThumbSize + ThumbListRowGap : 24f);
+            float rowHeight = gridMode ? GetSelectorGridCellHeight(panel, gridColumns) + SelectorGridGap : (panel.ThumbList ? SelectorPanelThumbSize + ThumbListRowGap : 24f);
             int showBefore = 1;
             int showAfter = Math.Max(4, (int)Math.Ceiling((selectorWindowRect.height - 112f) / rowHeight) + 2);
             int selectedVisibleIndex = GetSelectorVisibleIndex(selectedIndex, filteredIndices);
@@ -1518,8 +1518,9 @@ namespace StudioCharaEditor
                 return;
             }
 
-            float rowHeight = SelectorGridCellHeight + SelectorGridGap;
             float cellWidth = GetSelectorGridCellWidth(panel, columns);
+            float cellHeight = GetSelectorGridCellHeight(panel, columns);
+            float rowHeight = cellHeight + SelectorGridGap;
             if (range.FirstVisible > 0)
             {
                 GUILayout.Space(range.FirstVisible * rowHeight);
@@ -1541,7 +1542,7 @@ namespace StudioCharaEditor
                     int infoIndex = filteredIndices != null ? filteredIndices[visibleIndex] : visibleIndex;
                     if (infoIndex >= 0 && infoIndex < infoList.Count)
                     {
-                        DrawSelectorSideGridCell(panel, infoList[infoIndex], selectedId, cellWidth, SelectorGridCellHeight);
+                        DrawSelectorSideGridCell(panel, infoList[infoIndex], selectedId, cellWidth, cellHeight);
                     }
                     else
                     {
@@ -1610,19 +1611,24 @@ namespace StudioCharaEditor
             {
                 texture = Texture2D.blackTexture;
             }
+            bool showName = StudioCharaEditor.ShowSelectorGridItemNames.Value;
+            float thumbAreaHeight = showName ? cellHeight - SelectorGridLabelHeight : cellHeight;
             Rect thumbRect = new Rect(
-                cellRect.x + (cellRect.width - SelectorGridThumbSize) * 0.5f,
-                cellRect.y + 5f,
-                SelectorGridThumbSize,
-                SelectorGridThumbSize);
+                cellRect.x + SelectorGridCellPadding,
+                cellRect.y + SelectorGridCellPadding,
+                cellRect.width - SelectorGridCellPadding * 2f,
+                thumbAreaHeight - SelectorGridCellPadding * 2f);
             GUI.DrawTexture(thumbRect, texture, ScaleMode.ScaleToFit, true);
 
-            Rect labelRect = new Rect(
-                cellRect.x + 4f,
-                thumbRect.yMax + 2f,
-                cellRect.width - 8f,
-                Math.Max(20f, cellRect.yMax - thumbRect.yMax - 8f));
-            GUI.Label(labelRect, displayName, GetSelectorGridLabelStyle());
+            if (showName)
+            {
+                Rect labelRect = new Rect(
+                    cellRect.x + 4f,
+                    cellRect.y + thumbAreaHeight,
+                    cellRect.width - 8f,
+                    cellHeight - thumbAreaHeight);
+                GUI.Label(labelRect, displayName, GetSelectorGridLabelStyle());
+            }
 
             bool favorite = IsSelectorFavorite(panel.SelectorKey, info);
             Color oldColor = GUI.color;
@@ -1635,17 +1641,30 @@ namespace StudioCharaEditor
             GUI.color = oldColor;
         }
 
+        private static float GetSelectorGridThumbnailSize()
+        {
+            return Mathf.Clamp(StudioCharaEditor.SelectorGridThumbnailSize.Value, 48f, 200f);
+        }
+
         private int GetSelectorGridColumnCount(SelectorSidePanel panel)
         {
             float contentWidth = GetSelectorGridContentWidth(panel);
-            return Math.Max(1, (int)Math.Floor((contentWidth + SelectorGridGap) / (SelectorGridMinCellWidth + SelectorGridGap)));
+            float thumbSize = GetSelectorGridThumbnailSize();
+            return Math.Max(1, (int)Math.Floor((contentWidth + SelectorGridGap) / (thumbSize + SelectorGridGap)));
         }
 
         private float GetSelectorGridCellWidth(SelectorSidePanel panel, int columns)
         {
             columns = Math.Max(1, columns);
             float contentWidth = GetSelectorGridContentWidth(panel);
-            return Math.Max(SelectorGridMinCellWidth, (contentWidth - (columns - 1) * SelectorGridGap) / columns);
+            float thumbSize = GetSelectorGridThumbnailSize();
+            return Math.Max(thumbSize, (contentWidth - (columns - 1) * SelectorGridGap) / columns);
+        }
+
+        private float GetSelectorGridCellHeight(SelectorSidePanel panel, int columns)
+        {
+            float cellWidth = GetSelectorGridCellWidth(panel, columns);
+            return StudioCharaEditor.ShowSelectorGridItemNames.Value ? cellWidth + SelectorGridLabelHeight : cellWidth;
         }
 
         private float GetSelectorGridContentWidth(SelectorSidePanel panel)
@@ -1656,7 +1675,7 @@ namespace StudioCharaEditor
                 width -= SelectorFolderWidth + 12f;
             }
 
-            return Math.Max(SelectorGridMinCellWidth, width);
+            return Math.Max(GetSelectorGridThumbnailSize(), width);
         }
 
         private static int GetSelectorGridRowCount(int itemCount, int columns)
@@ -3417,6 +3436,10 @@ namespace StudioCharaEditor
                         GUI.color = Color.green;
                     if (GUILayout.Button(title))
                     {
+                        if (catelogIndex1 != c1)
+                        {
+                            CloseSelectorSidePanel();
+                        }
                         catelogIndex1 = c1;
                         detailPageSelect = SelectMode.Normal;
                     }
@@ -3494,6 +3517,10 @@ namespace StudioCharaEditor
                         }
                         if (GUILayout.Button(LC(title), categoryButtonStyle))
                         {
+                            if (catelogIndex2[catelogIndex1] != c2)
+                            {
+                                CloseSelectorSidePanel();
+                            }
                             catelogIndex2[catelogIndex1] = c2;
                             detailPageSelect = SelectMode.Normal;
                             // accessory multi selection
