@@ -112,8 +112,6 @@ namespace StudioCharaEditor
         private const float ResizeGripSize = 22f;
         private const float ResizeGripReserve = 28f;
         private const float SelectorPanelGap = 8f;
-        private const float SelectorPanelWidth = 540f;
-        private const float SelectorPanelDefaultHeight = 520f;
         private const float SelectorMinWindowWidth = 380f;
         private const float SelectorMinWindowHeight = 320f;
         private const float SelectorFolderWidth = 112f;
@@ -878,14 +876,23 @@ namespace StudioCharaEditor
             }
         }
 
+        internal void PersistSelectorWindowSize()
+        {
+            if (selectorWindowHasUserSize)
+            {
+                StudioCharaEditor.SelectorWindowWidth.Value = selectorWindowRect.width;
+                StudioCharaEditor.SelectorWindowHeight.Value = selectorWindowRect.height;
+            }
+        }
+
         private void PlaceSelectorWindowNearMain()
         {
             float width = selectorWindowHasUserSize
                 ? selectorWindowRect.width
-                : SelectorPanelWidth;
+                : StudioCharaEditor.SelectorWindowWidth.Value;
             float height = selectorWindowHasUserSize
                 ? selectorWindowRect.height
-                : SelectorPanelDefaultHeight;
+                : StudioCharaEditor.SelectorWindowHeight.Value;
 
             float x = windowRect.xMax + SelectorPanelGap;
             float logicalScreenW = Screen.width / StudioCharaEditor.UIScale.Value;
@@ -959,6 +966,7 @@ namespace StudioCharaEditor
                     StudioCharaEditor.UIYPosition.Value = (int)windowRect.y;
                     StudioCharaEditor.UIWidth.Value = (int)windowRect.width;
                     StudioCharaEditor.UIHeight.Value = (int)windowRect.height;
+                    PersistSelectorWindowSize();
                 }
             }
 
@@ -1260,10 +1268,37 @@ namespace StudioCharaEditor
             int selectedId = Convert.ToInt32(panel.DetailInfo.DetailDefine.Get(panel.ChaCtrl));
             int selectedIndex = GetSelectorIndex(selectorKey, infoList, selectedId, out string selectedName);
 
+            EnsureSelectorFolders(panel, infoList);
+            List<int> folderIndices = GetSelectedFolderIndices(panel);
+            bool inSearching = panel.ThumbList && !string.IsNullOrWhiteSpace(panel.SearchText);
+            string selectorFilterKey = selectorKey + "|side|" + (panel.SelectedFolderKey ?? SelectorFolderAllKey) + "|" + (inSearching ? panel.SearchText : string.Empty);
+            SelectorSearchState searchState = inSearching ? GetSelectorSearchState(selectorFilterKey, infoList, folderIndices, panel.SearchText) : null;
+            List<int> filteredIndices = inSearching ? searchState?.Matches : folderIndices;
+            int filteredCount = filteredIndices?.Count ?? infoList.Count;
+            bool gridMode = panel.ThumbList && panel.ViewMode == SelectorViewMode.Grid;
+            int gridColumns = gridMode ? GetSelectorGridColumnCount(panel) : 1;
+            int rangeCount = gridMode ? GetSelectorGridRowCount(filteredCount, gridColumns) : filteredCount;
+            float rowHeight = gridMode ? GetSelectorGridCellHeight(panel, gridColumns) + SelectorGridGap : (panel.ThumbList ? SelectorPanelThumbSize + ThumbListRowGap : 24f);
+            int showBefore = 1;
+            int showAfter = Math.Max(4, (int)Math.Ceiling((selectorWindowRect.height - 112f) / rowHeight) + 2);
+            int selectedVisibleIndex = GetSelectorVisibleIndex(selectedIndex, filteredIndices);
+            int selectedScrollIndex = gridMode && selectedVisibleIndex >= 0 ? selectedVisibleIndex / gridColumns : selectedVisibleIndex;
+            if (panel.PendingScrollToSelected)
+            {
+                panel.Scroll = selectedScrollIndex >= 0
+                    ? new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap)
+                    : Vector2.zero;
+                panel.PendingScrollToSelected = false;
+            }
+
             GUILayout.BeginHorizontal();
             GUILayout.Label(LC(panel.Name), GUILayout.Width(namew));
             GUILayout.Label(string.Format("#{0}: {1}", selectedId, selectedName));
             GUILayout.FlexibleSpace();
+            if (!panel.ThumbList && selectedScrollIndex >= 0 && GUILayout.Button("▼ " + LC("Scroll to selected")))
+            {
+                panel.Scroll = new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap);
+            }
             if (panel.ThumbList)
             {
                 DrawSelectorViewModeButton(panel);
@@ -1287,30 +1322,11 @@ namespace StudioCharaEditor
                     selectorThumbLoadPauseUntil = Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
                     ClearSelectorRuntimeCache(selectorKey);
                 }
+                if (selectedScrollIndex >= 0 && GUILayout.Button("▼ " + LC("Scroll to selected"), GUILayout.Width(140)))
+                {
+                    panel.Scroll = new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap);
+                }
                 GUILayout.EndHorizontal();
-            }
-
-            EnsureSelectorFolders(panel, infoList);
-            List<int> folderIndices = GetSelectedFolderIndices(panel);
-            bool inSearching = panel.ThumbList && !string.IsNullOrWhiteSpace(panel.SearchText);
-            string selectorFilterKey = selectorKey + "|side|" + (panel.SelectedFolderKey ?? SelectorFolderAllKey) + "|" + (inSearching ? panel.SearchText : string.Empty);
-            SelectorSearchState searchState = inSearching ? GetSelectorSearchState(selectorFilterKey, infoList, folderIndices, panel.SearchText) : null;
-            List<int> filteredIndices = inSearching ? searchState?.Matches : folderIndices;
-            int filteredCount = filteredIndices?.Count ?? infoList.Count;
-            bool gridMode = panel.ThumbList && panel.ViewMode == SelectorViewMode.Grid;
-            int gridColumns = gridMode ? GetSelectorGridColumnCount(panel) : 1;
-            int rangeCount = gridMode ? GetSelectorGridRowCount(filteredCount, gridColumns) : filteredCount;
-            float rowHeight = gridMode ? GetSelectorGridCellHeight(panel, gridColumns) + SelectorGridGap : (panel.ThumbList ? SelectorPanelThumbSize + ThumbListRowGap : 24f);
-            int showBefore = 1;
-            int showAfter = Math.Max(4, (int)Math.Ceiling((selectorWindowRect.height - 112f) / rowHeight) + 2);
-            int selectedVisibleIndex = GetSelectorVisibleIndex(selectedIndex, filteredIndices);
-            int selectedScrollIndex = gridMode && selectedVisibleIndex >= 0 ? selectedVisibleIndex / gridColumns : selectedVisibleIndex;
-            if (panel.PendingScrollToSelected)
-            {
-                panel.Scroll = selectedScrollIndex >= 0
-                    ? new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap)
-                    : Vector2.zero;
-                panel.PendingScrollToSelected = false;
             }
 
             GUILayout.BeginHorizontal();
@@ -1405,11 +1421,6 @@ namespace StudioCharaEditor
             }
             GUILayout.EndScrollView();
             TrackSelectorScroll(oldScroll, panel.Scroll);
-
-            if (selectedScrollIndex >= 0 && GUILayout.Button(LC("Scroll to selected")))
-            {
-                panel.Scroll = new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap);
-            }
             GUILayout.EndVertical();
             DrawSelectorFolderPanel(panel, infoList);
             GUILayout.EndHorizontal();
@@ -1604,7 +1615,13 @@ namespace StudioCharaEditor
                 return;
             }
 
+            Color cellColor = GUI.color;
+            if (selected)
+            {
+                GUI.color = Color.green;
+            }
             GUI.skin.button.Draw(cellRect, tooltipContent, hover, false, selected, false);
+            GUI.color = cellColor;
 
             Texture2D texture = GetSelectorThumbTexture(panel.Name, info);
             if (texture == null)

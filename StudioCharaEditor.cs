@@ -24,7 +24,7 @@ namespace StudioCharaEditor
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "2.5.3";
+        public const string Version = "2.5.4";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -50,6 +50,10 @@ namespace StudioCharaEditor
         public static ConfigEntry<bool> SelectorGridViewByDefault { get; private set; }
         public static ConfigEntry<float> SelectorGridThumbnailSize { get; private set; }
         public static ConfigEntry<bool> ShowSelectorGridItemNames { get; private set; }
+        public static ConfigEntry<float> SelectorWindowWidth { get; private set; }
+        public static ConfigEntry<float> SelectorWindowHeight { get; private set; }
+        public static ConfigEntry<bool> ShowTimelineIcons { get; private set; }
+        public static ConfigEntry<bool> ShowMultiDetailUI { get; private set; }
 
         internal SimpleToolbarToggle _toolbarCharEditor;
         private Harmony harmony;
@@ -90,6 +94,11 @@ namespace StudioCharaEditor
                     "Size in pixels of each thumbnail in the selector grid view. Lower values fit more columns.",
                     new AcceptableValueRange<float>(48f, 200f)));
             ShowSelectorGridItemNames = Config.Bind("GUI", "Show item names in grid view", true, "Show the item name under each thumbnail in the selector grid view.");
+            SelectorWindowWidth = Config.Bind("GUI", "Selector window width", 540f, "Remembered width of the item selector window.");
+            SelectorWindowHeight = Config.Bind("GUI", "Selector window height", 520f, "Remembered height of the item selector window.");
+            ShowTimelineIcons = Config.Bind("GUI", "Show timeline icons", true, "Show the 'T' Timeline interpolation buttons next to character values when the Timeline plugin is installed.");
+            ShowMultiDetailUI = Config.Bind("GUI", "Show multidetail plugin UI", true, "When the MultiDetail plugin is installed, replace the Body > Skin and Face > FaceType detail sliders with the multi-slot MultiDetail UI. Turn off to use the vanilla single-detail UI instead.");
+            ShowMultiDetailUI.SettingChanged += (_, __) => CharaEditorMgr.Instance?.RefreshAllControllerFileData();
 
             /*
             configGreeting = Config.Bind("General",   // The section under which the option is shown
@@ -145,6 +154,7 @@ namespace StudioCharaEditor
                     UIYPosition.Value = (int)ui.windowRect.y;
                     UIWidth.Value = (int)ui.windowRect.width;
                     UIHeight.Value = (int)ui.windowRect.height;
+                    ui.PersistSelectorWindowSize();
                 }
             }
         }
