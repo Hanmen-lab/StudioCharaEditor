@@ -337,7 +337,7 @@ namespace StudioCharaEditor
             myDetailDict = new Dictionary<string, CharaDetailInfo>();
             myDetailSet = new Dictionary<string, List<CharaDetailInfo>>();
             myUpdateSequence = new List<string>();
-            bool hasMultiDetailPlugin = PluginMultiDetail.IsAvailable;
+            bool hasMultiDetailPlugin = PluginMultiDetail.IsAvailable && StudioCharaEditor.ShowMultiDetailUI.Value;
 
             bool isDetailInCategory(string cdiKey)
             {
@@ -426,7 +426,7 @@ namespace StudioCharaEditor
             {
                 if (hasMultiDetailPlugin)
                 {
-                    if (PluginMultiDetail.IsNativeDetailSelector(cdd.Key))
+                    if (PluginMultiDetail.IsNativeDetailSelector(cdd.Key) || PluginMultiDetail.IsNativePowerSlider(cdd.Key))
                     {
                         continue;
                     }

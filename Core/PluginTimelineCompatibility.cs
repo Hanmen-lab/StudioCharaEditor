@@ -178,7 +178,7 @@ namespace StudioCharaEditor
 
         internal static bool CanSelect(OCIChar ociTarget, ChaControl chaCtrl, CharaDetailInfo detailInfo)
         {
-            if (!IsTimelineAvailable())
+            if (!StudioCharaEditor.ShowTimelineIcons.Value || !IsTimelineAvailable())
             {
                 return false;
             }
@@ -202,7 +202,7 @@ namespace StudioCharaEditor
 
         internal static bool CanSelectAbmx(OCIChar ociTarget, ChaControl chaCtrl, CharaDetailInfo detailInfo, int subSliderIndex)
         {
-            if (!IsTimelineAvailable())
+            if (!StudioCharaEditor.ShowTimelineIcons.Value || !IsTimelineAvailable())
             {
                 return false;
             }

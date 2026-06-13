@@ -15,6 +15,8 @@ namespace StudioCharaEditor
         private const string AssemblyName = "MultiDetailMod";
         private const string FaceDetailKey = "Face#FaceType#FaceDetailType";
         private const string BodyDetailKey = "Body#Skin#DetailType";
+        private const string FacePowerKey = "Face#FaceType#FaceDetailPower";
+        private const string BodyPowerKey = "Body#Skin#DetailPower";
         private const int DeferredFullBlendFrames = 18;
         internal const int SlotCount = 3;
 
@@ -43,6 +45,12 @@ namespace StudioCharaEditor
         {
             return string.Equals(detailKey, FaceDetailKey, StringComparison.Ordinal) ||
                    string.Equals(detailKey, BodyDetailKey, StringComparison.Ordinal);
+        }
+
+        internal static bool IsNativePowerSlider(string detailKey)
+        {
+            return string.Equals(detailKey, FacePowerKey, StringComparison.Ordinal) ||
+                   string.Equals(detailKey, BodyPowerKey, StringComparison.Ordinal);
         }
 
         internal static bool IsSlotDetailSelector(string detailKey)

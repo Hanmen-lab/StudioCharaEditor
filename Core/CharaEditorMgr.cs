@@ -158,6 +158,14 @@ namespace StudioCharaEditor
             return null;
         }
 
+        public void RefreshAllControllerFileData()
+        {
+            foreach (var ctrl in charaEditorCtrlDict.Values)
+            {
+                ctrl.InitFileData();
+            }
+        }
+
         public void ReloadDictionary()
         {
             LoadExtendSetting();
