@@ -624,15 +624,21 @@ namespace StudioCharaEditor
             {
                 Key = "Body#Skin#DetailPower",
                 Type = CharaDetailDefine.CharaDetailDefineType.SLIDER,
-                Get = (chaCtrl) => { return chaCtrl.fileBody.detailPower; },
-                Set = (chaCtrl, v) => { chaCtrl.fileBody.detailPower = (float)v; chaCtrl.ChangeBodyDetailPower(); },
+                Get = (chaCtrl) => { return PluginMultiDetail.IsAvailable ? PluginMultiDetail.GetPower(chaCtrl, true, 0) : chaCtrl.fileBody.detailPower; },
+                Set = (chaCtrl, v) => {
+                    if (PluginMultiDetail.IsAvailable) { PluginMultiDetail.SetPower(chaCtrl, true, 0, (float)v); return; }
+                    chaCtrl.fileBody.detailPower = (float)v; chaCtrl.ChangeBodyDetailPower();
+                },
             },
             new CharaDetailDefine
             {
                 Key = "Body#Skin#DetailType",
                 Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
-                Get = (chaCtrl) => { return chaCtrl.fileBody.detailId; },
-                Set = (chaCtrl, v) => { chaCtrl.fileBody.detailId = (int)v; chaCtrl.AddUpdateCMBodyTexFlags(true, true, true, true); },
+                Get = (chaCtrl) => { return PluginMultiDetail.IsAvailable ? PluginMultiDetail.GetSlot(chaCtrl, true, 0) : chaCtrl.fileBody.detailId; },
+                Set = (chaCtrl, v) => {
+                    if (PluginMultiDetail.IsAvailable) { PluginMultiDetail.SetSlot(chaCtrl, true, 0, (int)v); return; }
+                    chaCtrl.fileBody.detailId = (int)v; chaCtrl.AddUpdateCMBodyTexFlags(true, true, true, true);
+                },
                 Upd = (chaCtrl) => { chaCtrl.CreateBodyTexture(); },
                 SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_b : ChaListDefine.CategoryNo.ft_detail_b, ChaListDefine.KeyType.Unknown); },
             },
@@ -972,15 +978,21 @@ namespace StudioCharaEditor
             {
                 Key = "Face#FaceType#FaceDetailPower",
                 Type = CharaDetailDefine.CharaDetailDefineType.SLIDER,
-                Get = (chaCtrl) => { return chaCtrl.fileFace.detailPower; },
-                Set = (chaCtrl, v) => { chaCtrl.fileFace.detailPower = (float)v; chaCtrl.ChangeFaceDetailPower(); },
+                Get = (chaCtrl) => { return PluginMultiDetail.IsAvailable ? PluginMultiDetail.GetPower(chaCtrl, false, 0) : chaCtrl.fileFace.detailPower; },
+                Set = (chaCtrl, v) => {
+                    if (PluginMultiDetail.IsAvailable) { PluginMultiDetail.SetPower(chaCtrl, false, 0, (float)v); return; }
+                    chaCtrl.fileFace.detailPower = (float)v; chaCtrl.ChangeFaceDetailPower();
+                },
             },
             new CharaDetailDefine
             {
                 Key = "Face#FaceType#FaceDetailType",
                 Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
-                Get = (chaCtrl) => { return chaCtrl.fileFace.detailId; },
-                Set = (chaCtrl, v) => { chaCtrl.fileFace.detailId = (int)v; chaCtrl.ChangeFaceDetailKind(); },
+                Get = (chaCtrl) => { return PluginMultiDetail.IsAvailable ? PluginMultiDetail.GetSlot(chaCtrl, false, 0) : chaCtrl.fileFace.detailId; },
+                Set = (chaCtrl, v) => {
+                    if (PluginMultiDetail.IsAvailable) { PluginMultiDetail.SetSlot(chaCtrl, false, 0, (int)v); return; }
+                    chaCtrl.fileFace.detailId = (int)v; chaCtrl.ChangeFaceDetailKind();
+                },
                 SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_detail_f : ChaListDefine.CategoryNo.ft_detail_f, ChaListDefine.KeyType.Unknown); },
             },
             new CharaDetailDefine
