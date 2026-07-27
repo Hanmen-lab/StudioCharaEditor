@@ -313,11 +313,33 @@ namespace StudioCharaEditor
         {
             chaCtrl.nowCoordinate.clothes.parts[clothIndex].id = id;
             chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].id = id;
+            ResetClothCustomTextureInit(chaCtrl, clothIndex);
             PluginBetterPenetration.ClothesReloadState bpState = PluginBetterPenetration.BeforeClothesReload(chaCtrl);
             yield return chaCtrl.ChangeClothesAsync(clothIndex, id, false, false);
             PluginBetterPenetration.AfterClothesReload(bpState);
             PluginHooahComponents.ScheduleRebindDickColliders(chaCtrl);
             cec.UpdateDetailInfo_ClothType(clothName);
+        }
+
+        // Slots we already tried to rebuild the custom-texture stack for, keyed by chaCtrl instance + slot.
+        // InitBaseCustomTextureClothes allocates 2 CustomTextureCreate per texture layer (each owning a
+        // full-size RenderTexture + a cloned Material, plus a ReadPixels Texture2D) and overwrites
+        // ctCreateClothes/ctCreateClothesGloss with `= null` WITHOUT releasing the previous ones. Retrying
+        // it on every colour-drag tick (~16/s) therefore orphans hundreds of MB of VRAM per second whenever
+        // ChangeCustomClothes keeps returning false for an unrelated reason (e.g. no CmpClothes component).
+        private static readonly HashSet<long> clothCustomTextureInitTried = new HashSet<long>();
+
+        private static long ClothCustomTextureKey(ChaControl chaCtrl, int clothIndex)
+        {
+            return ((long)chaCtrl.GetInstanceID() << 8) | (uint)(byte)clothIndex;
+        }
+
+        public static void ResetClothCustomTextureInit(ChaControl chaCtrl, int clothIndex)
+        {
+            if (chaCtrl != null)
+            {
+                clothCustomTextureInitTried.Remove(ClothCustomTextureKey(chaCtrl, clothIndex));
+            }
         }
 
         public static bool updateClothCustomTexture(ChaControl chaCtrl, int clothIndex, bool updateColor, bool updateTex01, bool updateTex02, bool updateTex03)
@@ -328,8 +350,20 @@ namespace StudioCharaEditor
                 return true;
             }
 
+            if (!clothCustomTextureInitTried.Add(ClothCustomTextureKey(chaCtrl, clothIndex)))
+            {
+                // Already rebuilt (or failed to rebuild) this slot since the last clothes change; retrying
+                // would only leak. Reset happens in updateClothTypeAsync when the slot actually changes.
+                return false;
+            }
+
             try
             {
+                // Free whatever is currently in ctCreateClothes[slot,*] first — Init would otherwise just
+                // drop the references and leave the RenderTextures/Materials orphaned. This mirrors what
+                // vanilla ChangeClothesAsync does before its own InitBaseCustomTextureClothes call.
+                chaCtrl.ReleaseBaseCustomTextureClothes(clothIndex);
+
                 updated = chaCtrl.InitBaseCustomTextureClothes(clothIndex) &&
                           chaCtrl.ChangeCustomClothes(clothIndex, updateColor, updateTex01, updateTex02, updateTex03);
                 if (!updated && StudioCharaEditor.VerboseMessage.Value)
