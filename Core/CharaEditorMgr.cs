@@ -48,6 +48,15 @@ namespace StudioCharaEditor
             StartCoroutine(LoadingCo());
         }
 
+        private void OnDestroy()
+        {
+            StopAllCoroutines();
+            if (ReferenceEquals(Instance, this))
+            {
+                Instance = null;
+            }
+        }
+
         //[Warning: Unity Log] OnLevelWasLoaded was found on ConsolePlugin
         //This message has been deprecated and will be removed in a later version of Unity.
         //Add a delegate to SceneManager.sceneLoaded instead to get notifications after scene loading has completed

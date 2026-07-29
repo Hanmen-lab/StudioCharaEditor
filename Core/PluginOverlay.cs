@@ -72,7 +72,15 @@ namespace StudioCharaEditor
             {
                 TexType texType = (TexType)Enum.Parse(typeof(TexType), texName);
                 byte[] texBytes = tex == null ? null : ImageConversion.EncodeToPNG((Texture2D)tex);
-                skinOverlayCtrl.SetOverlayTex(texBytes, texType);
+                PluginPandarinkaToolkit.BeginOverlayRefresh(chaCtrl);
+                try
+                {
+                    skinOverlayCtrl.SetOverlayTex(texBytes, texType);
+                }
+                finally
+                {
+                    PluginPandarinkaToolkit.EndOverlayRefresh(chaCtrl);
+                }
             }
             catch (Exception e)
             {
@@ -205,7 +213,15 @@ namespace StudioCharaEditor
                 texData.Texture = copyTexture;
             }
             //texData.Texture = (Texture2D)tex;
-            overlayControll.RefreshTexture(getClothId(chaCtrl));
+            PluginPandarinkaToolkit.BeginOverlayRefresh(chaCtrl);
+            try
+            {
+                overlayControll.RefreshTexture(getClothId(chaCtrl));
+            }
+            finally
+            {
+                PluginPandarinkaToolkit.EndOverlayRefresh(chaCtrl);
+            }
             modified = true;
         }
 
@@ -214,7 +230,15 @@ namespace StudioCharaEditor
             KoiClothesOverlayController overlayControll = getClothOverlayCtrl(chaCtrl);
             if (overlayControll == null) return;
 
-            overlayControll.RefreshTexture(getClothId(chaCtrl));
+            PluginPandarinkaToolkit.BeginOverlayRefresh(chaCtrl);
+            try
+            {
+                overlayControll.RefreshTexture(getClothId(chaCtrl));
+            }
+            finally
+            {
+                PluginPandarinkaToolkit.EndOverlayRefresh(chaCtrl);
+            }
         }
 
         public void LoadNewOverlayTexture(ChaControl chaCtrl)

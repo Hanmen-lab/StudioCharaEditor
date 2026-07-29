@@ -87,7 +87,7 @@ namespace StudioCharaEditor
             Texture2D scrollTrackTex = ThemeTexture("ui_scroll_track.png", 32, 32, Rgba(18, 21, 24, 200), Rgba(18, 21, 24, 200), 2, 0);
             Texture2D scrollThumbTex = ThemeTexture("ui_scroll_thumb.png", 32, 32, Rgba(92, 105, 114, 235), Rgba(119, 135, 146, 235), 2, 1);
             Texture2D sliderTrackTex = ThemeTexture("ui_slider_track.png", 64, 8, Rgba(14, 16, 18, 225), Rgba(48, 56, 62, 230), 1, 1);
-            Texture2D sliderThumbTex = ThemeTexture("ui_slider_thumb.png", 8, 8, Rgba(150, 161, 168), Rgba(199, 209, 214), 1, 1);
+            Texture2D sliderThumbTex = ThemeTexture("ui_slider_thumb.png", 10, 10, Rgba(150, 161, 168), Rgba(199, 209, 214), 1, 1);
             ToggleOffTexture = ThemeTexture("ui_toggle_off.png", 18, 18, Transparent, Transparent, 0, 0);
             ToggleOnTexture = ThemeTexture("ui_toggle_on.png", 18, 18, Transparent, Transparent, 0, 0);
 
@@ -125,6 +125,14 @@ namespace StudioCharaEditor
                 richText = true,
                 wordWrap = false
             };
+            // Pangram's glyphs extend a little below the line metrics Unity
+            // reports to IMGUI. Reserve real vertical space for descenders in
+            // ordinary labels such as ABMX names and selector captions.
+            Skin.label.padding = new RectOffset(
+                Skin.label.padding.left,
+                Skin.label.padding.right,
+                1,
+                4);
 
             LargeLabelStyle = new GUIStyle(Skin.label)
             {
@@ -155,7 +163,8 @@ namespace StudioCharaEditor
             Skin.horizontalScrollbar = ScrollBarStyle(Skin.horizontalScrollbar, scrollTrackTex, -1f, 8f);
             Skin.verticalScrollbar = ScrollBarStyle(Skin.verticalScrollbar, scrollTrackTex, 12f, -1f);
             Skin.horizontalScrollbarThumb = ScrollBarStyle(Skin.horizontalScrollbarThumb, scrollThumbTex, -1f, 8f);
-            Skin.verticalScrollbarThumb = ScrollBarStyle(Skin.verticalScrollbarThumb, scrollThumbTex, 12f, 28f);
+            Skin.verticalScrollbarThumb = ScrollBarStyle(Skin.verticalScrollbarThumb, scrollThumbTex, 12f, 0f);
+            Skin.verticalScrollbarThumb.stretchHeight = true;
             Skin.horizontalScrollbarLeftButton = HiddenScrollButton(Skin.horizontalScrollbarLeftButton, clearTex);
             Skin.horizontalScrollbarRightButton = HiddenScrollButton(Skin.horizontalScrollbarRightButton, clearTex);
             Skin.verticalScrollbarUpButton = HiddenScrollButton(Skin.verticalScrollbarUpButton, clearTex);
@@ -195,7 +204,10 @@ namespace StudioCharaEditor
             style.focused.textColor = TextColor;
             style.richText = true;
             style.border = new RectOffset(4, 4, 4, 4);
-            style.padding = new RectOffset(7, 7, 6, 6);
+            // Separator headers (for example "ABMX Body") use the box style.
+            // Pangram's y/g/p/q descenders sit below Unity's reported line
+            // metrics, so keep the same total height but move the text area up.
+            style.padding = new RectOffset(7, 7, 4, 8);
             style.margin = new RectOffset(3, 3, 3, 3);
             return style;
         }
@@ -214,8 +226,12 @@ namespace StudioCharaEditor
             style.richText = true;
             style.alignment = TextAnchor.MiddleCenter;
             style.border = new RectOffset(4, 4, 4, 4);
-            style.padding = new RectOffset(8, 8, 4, 4);
+            // Keep enough usable content height for Pangram's descenders.
+            // Large padding inside a fixed-height button clips letters such as
+            // p, q, g and y even though the outer button itself looks tall.
+            style.padding = new RectOffset(8, 8, 2, 3);
             style.margin = new RectOffset(2, 2, 2, 2);
+            style.fixedHeight = 26f;
             return style;
         }
 
@@ -232,7 +248,7 @@ namespace StudioCharaEditor
             style.active.textColor = Color.white;
             style.richText = false;
             style.border = new RectOffset(4, 4, 4, 4);
-            style.padding = new RectOffset(8, 8, 5, 5);
+            style.padding = new RectOffset(8, 8, 3, 4);
             style.margin = new RectOffset(2, 2, 2, 2);
             return style;
         }
@@ -259,9 +275,9 @@ namespace StudioCharaEditor
             style.richText = true;
             style.alignment = TextAnchor.MiddleLeft;
             style.border = new RectOffset(0, 0, 0, 0);
-            style.padding = new RectOffset(0, 4, 0, 0);
+            style.padding = new RectOffset(0, 4, 1, 3);
             style.margin = new RectOffset(2, 2, 1, 1);
-            style.fixedHeight = 16f;
+            style.fixedHeight = 22f;
             return style;
         }
 
@@ -310,8 +326,8 @@ namespace StudioCharaEditor
             style.border = new RectOffset(2, 2, 2, 2);
             style.margin = new RectOffset(0, 0, 0, 0);
             style.padding = new RectOffset(0, 0, 0, 0);
-            style.fixedWidth = 8f;
-            style.fixedHeight = 8f;
+            style.fixedWidth = 10f;
+            style.fixedHeight = 10f;
             return style;
         }
 
@@ -325,14 +341,24 @@ namespace StudioCharaEditor
             style.border = new RectOffset(1, 1, 1, 1);
             style.padding = new RectOffset(0, 0, 0, 0);
             style.margin = new RectOffset(0, 0, 0, 0);
+            style.fixedWidth = 14f;
+            style.fixedHeight = 14f;
+            style.stretchWidth = false;
+            style.stretchHeight = false;
             return style;
         }
 
         private GUIStyle HiddenScrollButton(GUIStyle source, Texture2D texture)
         {
             GUIStyle style = ScrollBarStyle(source, texture);
-            style.fixedWidth = 0;
-            style.fixedHeight = 0;
+            // A zero fixed size means "automatic" to IMGUI, so the transparent
+            // 24x24 texture still reserved a large invisible button at each end
+            // of the scrollbar. Keep the controls present, but make their travel
+            // reservation effectively disappear.
+            style.fixedWidth = 1f;
+            style.fixedHeight = 1f;
+            style.margin = new RectOffset(0, 0, 0, 0);
+            style.padding = new RectOffset(0, 0, 0, 0);
             return style;
         }
 

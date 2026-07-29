@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.ConstrainedExecution;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -104,6 +105,7 @@ namespace StudioCharaEditor
         private GUIStyle resizeGripStyle;
         private GUIStyle selectorGridLabelStyle;
         private GUIStyle selectorTooltipStyle;
+        private GUIStyle selectorSourceLabelStyle;
         private const float ThumbListRowGap = 4f;
         private const int ColorSwatchWidth = 74;
         private const int ColorSwatchHeight = 20;
@@ -115,7 +117,7 @@ namespace StudioCharaEditor
         private const float SelectorMinWindowWidth = 380f;
         private const float SelectorMinWindowHeight = 320f;
         private const float SelectorFolderWidth = 112f;
-        private const float SelectorFolderRowHeight = 24f;
+        private const float SelectorFolderRowHeight = 26f;
         private const float SelectorPanelThumbSize = 78f;
         private const float SelectorPanelButtonHeight = 40f;
         private const float SelectorGridGap = 4f;
@@ -123,7 +125,7 @@ namespace StudioCharaEditor
         private const float SelectorGridLabelHeight = 18f;
         private const float ThinSliderHeight = 20f;
         private const float ThinSliderTrackHeight = 2f;
-        private const float ThinSliderThumbSize = 7f;
+        private const float ThinSliderThumbSize = 10f;
         private const float TimelineButtonWidth = 22f;
         private const float ColorDragApplyInterval = 0.06f;
         private const float SelectorSearchDelay = 0.25f;
@@ -134,6 +136,12 @@ namespace StudioCharaEditor
         private const float SelectorThumbLoadIdleDelay = 0.25f;
         private const float SelectorThumbLoadInterval = 0.04f;
         private const float SelectorScrollChangeEpsilon = 0.5f;
+        private const int MaxCachedSelectorThumbLoadsPerFrame = 4;
+        private const int MaxRuntimeCachedSelectorThumbnails = 512;
+        private const int SelectorThumbnailCacheCleanupInterval = 40;
+        private const int SelectorThumbnailCacheMaxDimension = 256;
+        private const string SelectorThumbnailCacheFolderName = "ThumbnailCache";
+        private const string SelectorThumbnailCacheVersion = "v2";
         private const string SelectorFolderAllKey = "__all";
         private const string SelectorFolderFavoritesKey = "__favorites";
         private const string SelectorFolderCustomPrefix = "custom:";
@@ -149,8 +157,23 @@ namespace StudioCharaEditor
         private readonly Dictionary<string, List<SelectorCustomFolder>> selectorCustomFoldersByScope = new Dictionary<string, List<SelectorCustomFolder>>();
         private int selectorThumbLoadFrame = -1;
         private int selectorThumbLoadsThisFrame;
+        private int selectorCachedThumbLoadFrame = -1;
+        private int selectorCachedThumbLoadsThisFrame;
         private float selectorThumbLoadPauseUntil;
         private float selectorNextThumbLoadTime;
+        private Coroutine selectorThumbnailCacheCoroutine;
+        private string selectorThumbnailCacheStatus = string.Empty;
+        private int selectorThumbnailCacheProcessed;
+        private int selectorThumbnailCacheTotal;
+        private int selectorThumbnailCacheWritten;
+        private readonly Dictionary<string, string> selectorThumbnailCachePathPool =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, Texture2D> selectorDiskTexturePool =
+            new Dictionary<string, Texture2D>(StringComparer.Ordinal);
+        private readonly Queue<string> selectorDiskTextureLoadOrder =
+            new Queue<string>();
+        private readonly HashSet<string> selectorThumbnailDiskMisses =
+            new HashSet<string>(StringComparer.Ordinal);
         private bool selectorFavoritesLoaded;
         private bool selectorCustomFoldersLoaded;
         private bool selectorTranslationsLoaded;
@@ -446,6 +469,25 @@ namespace StudioCharaEditor
         private void OnDestroy()
         {
             FlushPendingColorChanges(true);
+            PersistSelectorWindowSize();
+
+            if (selectorThumbnailCacheCoroutine != null)
+            {
+                StopCoroutine(selectorThumbnailCacheCoroutine);
+                selectorThumbnailCacheCoroutine = null;
+            }
+
+            foreach (Texture2D texture in selectorDiskTexturePool.Values)
+            {
+                if (texture != null)
+                {
+                    Destroy(texture);
+                }
+            }
+            selectorDiskTexturePool.Clear();
+            selectorDiskTextureLoadOrder.Clear();
+            selectorThumbnailDiskMisses.Clear();
+            selectorThumbnailCachePathPool.Clear();
 
             foreach (ColorSwatch swatch in colorSwatchPool.Values)
             {
@@ -543,6 +585,25 @@ namespace StudioCharaEditor
             }
 
             return selectorTooltipStyle;
+        }
+
+        private GUIStyle GetSelectorSourceLabelStyle()
+        {
+            if (selectorSourceLabelStyle == null)
+            {
+                selectorSourceLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 11,
+                    wordWrap = true,
+                    clipping = TextClipping.Clip,
+                    padding = new RectOffset(0, 0, 0, 3),
+                    margin = new RectOffset(0, 0, 0, 0)
+                };
+                selectorSourceLabelStyle.normal.textColor =
+                    new Color(0.58f, 0.66f, 0.70f, 1f);
+            }
+
+            return selectorSourceLabelStyle;
         }
 
         private bool DrawModernToggle(bool value, string label, params GUILayoutOption[] options)
@@ -813,6 +874,7 @@ namespace StudioCharaEditor
                     {
                         resizingSelectorWindow = false;
                         GUIUtility.hotControl = 0;
+                        PersistSelectorWindowSize();
                         evt.Use();
                     }
                     break;
@@ -882,6 +944,7 @@ namespace StudioCharaEditor
             {
                 StudioCharaEditor.SelectorWindowWidth.Value = selectorWindowRect.width;
                 StudioCharaEditor.SelectorWindowHeight.Value = selectorWindowRect.height;
+                StudioCharaEditor.SaveConfigNow();
             }
         }
 
@@ -948,9 +1011,20 @@ namespace StudioCharaEditor
 
                 VisibleGUI = !VisibleGUI;
 
-                // Синхронизируем состояние кнопки
-                if (StudioCharaEditor.Instance._toolbarCharEditor != null)
-                    StudioCharaEditor.Instance._toolbarCharEditor.Toggled.OnNext(VisibleGUI);
+                // The toolbar can be disposed a frame before this UI is
+                // destroyed during DevReload. Do not let that race kill the
+                // editor window.
+                StudioCharaEditor plugin = StudioCharaEditor.Instance;
+                if (plugin?._toolbarCharEditor != null)
+                {
+                    try
+                    {
+                        plugin._toolbarCharEditor.Toggled.OnNext(VisibleGUI);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                }
 
                 if (VisibleGUI)
                 {
@@ -1327,6 +1401,8 @@ namespace StudioCharaEditor
                     panel.Scroll = new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap);
                 }
                 GUILayout.EndHorizontal();
+
+                DrawSelectorThumbnailCacheControls(panel);
             }
 
             GUILayout.BeginHorizontal();
@@ -1480,6 +1556,41 @@ namespace StudioCharaEditor
             {
                 DrawSelectorViewModeIcon(rect, panel.ViewMode, true);
             }
+        }
+
+        private void DrawSelectorThumbnailCacheControls(
+            SelectorSidePanel panel)
+        {
+            GUILayout.BeginHorizontal();
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled &&
+                          selectorThumbnailCacheCoroutine == null;
+            if (GUILayout.Button(
+                    new GUIContent(
+                        LC("Cache missing clothes and accessories previews"),
+                        LC("Saves missing previews from every clothing and accessory category to BepInEx/Plugins/StudioCharaEditor/ThumbnailCache.")),
+                    GUILayout.Width(360f)))
+            {
+                StartSelectorThumbnailCache(panel);
+            }
+            GUI.enabled = previousEnabled;
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            if (selectorThumbnailCacheCoroutine != null)
+            {
+                GUILayout.Label(
+                    string.Format(
+                        LC("Caching previews: {0}/{1} ({2} new)"),
+                        selectorThumbnailCacheProcessed,
+                        selectorThumbnailCacheTotal,
+                        selectorThumbnailCacheWritten));
+            }
+            else if (!string.IsNullOrEmpty(selectorThumbnailCacheStatus))
+            {
+                GUILayout.Label(selectorThumbnailCacheStatus);
+            }
+            GUILayout.EndHorizontal();
         }
 
         private void DrawSelectorViewModeIcon(Rect rect, SelectorViewMode mode, bool selected)
@@ -3368,6 +3479,7 @@ namespace StudioCharaEditor
 
         private void CloseSelectorSidePanel()
         {
+            PersistSelectorWindowSize();
             selectorSidePanel = null;
             selectorContextMenu = null;
             resizingSelectorWindow = false;
@@ -3672,7 +3784,10 @@ namespace StudioCharaEditor
                     if (renameMode)
                         tempCharaName = GUILayout.TextField(tempCharaName, GUILayout.Width(200));
                     else
-                        GUILayout.Label(magentaText(ociTarget.treeNodeObject.textName) + greenText(" > " + LC(category1) + " > " + LC(category2)));
+                        GUILayout.Label(
+                            magentaText(ociTarget.treeNodeObject.textName) +
+                            greenText(" > " + LC(category1) + " > " + LC(category2)),
+                            GUILayout.MinHeight(26f));
                     GUILayout.FlexibleSpace();
                     if (renameMode)
                     {
@@ -4162,7 +4277,7 @@ namespace StudioCharaEditor
             {
                 if (GUILayout.Button("+1", GUILayout.Width(30)))
                     newV += stepSmall;
-                if (GUILayout.Button("+10", GUILayout.Width(35)))
+                if (GUILayout.Button("+10", GUILayout.Width(40)))
                     newV += stepLarge;
             }
             if (dInfo.RevertValue != null && GUILayout.Button("R", GUILayout.Width(25)))
@@ -4239,6 +4354,7 @@ namespace StudioCharaEditor
             int oldId = (int)dInfo.DetailDefine.Get(chaCtrl);
             string oldName = "!!Unknown!!";
             int oldIndex = -1;
+            CustomSelectInfo oldInfo = null;
             string selectorKey = dInfo.DetailDefine.Key;
             List<CustomSelectInfo> infoLst = GetSelectorList(chaCtrl, dInfo);
             Dictionary<int, int> indexById;
@@ -4246,6 +4362,7 @@ namespace StudioCharaEditor
             {
                 CustomSelectInfo selectedInfo = infoLst[oldIndex];
                 oldName = selectedInfo.name;
+                oldInfo = selectedInfo;
             }
             else
             {
@@ -4255,8 +4372,24 @@ namespace StudioCharaEditor
                     {
                         oldName = infoLst[i].name;
                         oldIndex = i;
+                        oldInfo = infoLst[i];
                         break;
                     }
+                }
+            }
+
+            string sourceName = oldInfo == null
+                ? "Unknown"
+                : PluginSideloaderSource.GetZipmodFileName(oldInfo) ?? "Base game";
+
+            void DrawSelectedItemSource()
+            {
+                if (thumbList)
+                {
+                    GUILayout.Label(
+                        "ZIPMOD: " + sourceName,
+                        GetSelectorSourceLabelStyle(),
+                        GUILayout.MinHeight(18f));
                 }
             }
 
@@ -4313,7 +4446,10 @@ namespace StudioCharaEditor
             {
                 Texture2D tex = oldIndex >= 0 ? getThumbTex(infoLst[oldIndex]) : Texture2D.blackTexture;
                 GUILayout.Box(tex, GUILayout.Width(thumbSizeSmall), GUILayout.Height(thumbSizeSmall));
+                GUILayout.BeginVertical();
                 GUILayout.Label(string.Format("#{0}\n{1}", oldId, oldName));
+                DrawSelectedItemSource();
+                GUILayout.EndVertical();
                 GUILayout.FlexibleSpace();
                 if (IsSelectorSidePanelOpen(selectorKey))
                 {
@@ -4331,7 +4467,10 @@ namespace StudioCharaEditor
             }
             else
             {
+                GUILayout.BeginVertical();
                 GUILayout.Label(string.Format("#{0}: {1}", oldId, oldName));
+                DrawSelectedItemSource();
+                GUILayout.EndVertical();
                 GUILayout.FlexibleSpace();
                 if (expandPool[name])
                 {
@@ -4854,7 +4993,7 @@ namespace StudioCharaEditor
                 {
                     if (GUILayout.Button("+1", GUILayout.Width(30)))
                         newV += 0.01f;
-                    if (GUILayout.Button("+10", GUILayout.Width(35)))
+                    if (GUILayout.Button("+10", GUILayout.Width(40)))
                         newV += 0.1f;
                 }
                 if (GUILayout.Button("R", GUILayout.Width(25)))
@@ -4996,17 +5135,23 @@ namespace StudioCharaEditor
             GUILayout.Label(cyanText(savingPath));
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC("PNG file name:"), largeLabel);
+            GUILayout.Label(LC("PNG file name:"), largeLabel, GUILayout.MinHeight(28f));
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
             if (savingCoordinate)
             {
-                coordinateName = GUILayout.TextField(coordinateName, GUILayout.Width(200));
-                GUILayout.Label(".png", GUILayout.Width(50));
+                coordinateName = GUILayout.TextField(
+                    coordinateName,
+                    GUILayout.Width(200),
+                    GUILayout.Height(26f));
+                GUILayout.Label(
+                    ".png",
+                    GUILayout.Width(50),
+                    GUILayout.Height(26f));
             }
             else
             {
-                GUILayout.Label(cyanText(savingFilename));
+                GUILayout.Label(cyanText(savingFilename), GUILayout.MinHeight(26f));
             }
             GUILayout.EndHorizontal();
             GUILayout.Space(10);
@@ -5298,15 +5443,743 @@ namespace StudioCharaEditor
             string texKey = info.assetBundle + "+" + info.assetName;
             if (!thumbPool[name].ContainsKey(texKey))
             {
+                if (selectorDiskTexturePool.TryGetValue(
+                        texKey,
+                        out Texture2D sharedCachedTexture) &&
+                    sharedCachedTexture != null)
+                {
+                    thumbPool[name][texKey] = sharedCachedTexture;
+                    return sharedCachedTexture;
+                }
+
+                string cachePath = GetSelectorThumbnailCachePath(texKey);
+                bool cacheExists =
+                    !selectorThumbnailDiskMisses.Contains(texKey) &&
+                    File.Exists(cachePath);
+                if (cacheExists)
+                {
+                    if (!CanLoadCachedSelectorThumbnailThisFrame())
+                    {
+                        return Texture2D.blackTexture;
+                    }
+
+                    Texture2D diskTexture =
+                        TryLoadSelectorThumbnailFromDisk(
+                            texKey,
+                            cachePath);
+                    if (diskTexture != null)
+                    {
+                        thumbPool[name][texKey] = diskTexture;
+                        return diskTexture;
+                    }
+                }
+                else
+                {
+                    selectorThumbnailDiskMisses.Add(texKey);
+                }
+
                 if (IsSelectorThumbnailLoadPaused() || !CanLoadSelectorThumbnailThisFrame())
                 {
                     return Texture2D.blackTexture;
                 }
-                Texture2D loaded = CommonLib.LoadAsset<Texture2D>(info.assetBundle, info.assetName, false, "");
+                Texture2D loaded = LoadSelectorThumbnailFromBundle(info);
                 thumbPool[name][texKey] = loaded != null ? loaded : Texture2D.blackTexture;
             }
 
             return thumbPool[name][texKey] != null ? thumbPool[name][texKey] : Texture2D.blackTexture;
+        }
+
+        private Texture2D LoadSelectorThumbnailFromBundle(CustomSelectInfo info)
+        {
+            if (info == null ||
+                string.IsNullOrEmpty(info.assetBundle) ||
+                string.IsNullOrEmpty(info.assetName))
+            {
+                return null;
+            }
+
+            try
+            {
+                return CommonLib.LoadAsset<Texture2D>(
+                    info.assetBundle,
+                    info.assetName,
+                    false,
+                    "");
+            }
+            finally
+            {
+                // CommonLib.LoadAsset increments the bundle reference count even
+                // when the bundle is already loaded. The selector only needs the
+                // returned texture, so balance that reference without destroying
+                // loaded texture objects.
+                LoadedAssetBundle loadedBundle =
+                    AssetBundleManager.GetLoadedAssetBundle(
+                        info.assetBundle,
+                        "");
+                if (loadedBundle != null)
+                {
+                    AssetBundleManager.UnloadAssetBundle(
+                        info.assetBundle,
+                        false,
+                        "",
+                        false);
+                }
+            }
+        }
+
+        private void StartSelectorThumbnailCache(
+            SelectorSidePanel panel)
+        {
+            if (selectorThumbnailCacheCoroutine != null ||
+                panel == null)
+            {
+                return;
+            }
+
+            List<CustomSelectInfo> snapshot =
+                BuildSelectorThumbnailCacheSnapshot(panel);
+            selectorThumbnailCacheProcessed = 0;
+            selectorThumbnailCacheTotal = 0;
+            selectorThumbnailCacheWritten = 0;
+            selectorThumbnailCacheStatus =
+                LC("Scanning preview cache...");
+            selectorThumbnailCacheCoroutine = StartCoroutine(
+                CacheMissingSelectorThumbnails(
+                    "ClothesAndAccessories",
+                    snapshot));
+        }
+
+        private List<CustomSelectInfo>
+            BuildSelectorThumbnailCacheSnapshot(
+                SelectorSidePanel panel)
+        {
+            List<CustomSelectInfo> snapshot =
+                new List<CustomSelectInfo>();
+
+            if (panel?.ChaCtrl == null ||
+                string.IsNullOrEmpty(panel.SelectorKey))
+            {
+                return snapshot;
+            }
+
+            List<CustomSelectInfo> categories =
+                CharaDetailSet.GetAccessoryCategorySelectList();
+            for (int categoryIndex = 0;
+                 categoryIndex < categories.Count;
+                 categoryIndex++)
+            {
+                CustomSelectInfo category = categories[categoryIndex];
+                try
+                {
+                    List<CustomSelectInfo> list =
+                        CvsBase.CreateSelectList(
+                            (ChaListDefine.CategoryNo)category.id);
+                    if (list != null)
+                    {
+                        snapshot.AddRange(list);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    StudioCharaEditor.Logger?.LogWarning(
+                        "Failed to enumerate accessory previews for category '" +
+                        category.name +
+                        "' (" +
+                        category.id +
+                        "): " +
+                        exception.Message);
+                }
+            }
+
+            CharaEditorController controller =
+                CharaEditorMgr.Instance?.GetEditorController(
+                    panel.ChaCtrl);
+            if (controller?.myDetailSet == null)
+            {
+                return snapshot;
+            }
+
+            foreach (KeyValuePair<string, List<CharaDetailInfo>>
+                     pair in controller.myDetailSet)
+            {
+                if (string.IsNullOrEmpty(pair.Key) ||
+                    !pair.Key.StartsWith(
+                        CharaEditorController.CT1_CTHS + "#",
+                        StringComparison.Ordinal) ||
+                    pair.Value == null)
+                {
+                    continue;
+                }
+
+                for (int detailIndex = 0;
+                     detailIndex < pair.Value.Count;
+                     detailIndex++)
+                {
+                    CharaDetailInfo detail =
+                        pair.Value[detailIndex];
+                    if (detail?.DetailDefine?.SelectorList == null)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        List<CustomSelectInfo> list =
+                            GetSelectorList(
+                                panel.ChaCtrl,
+                                detail);
+                        if (list != null)
+                        {
+                            snapshot.AddRange(list);
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        StudioCharaEditor.Logger?.LogWarning(
+                            "Failed to enumerate clothing previews for '" +
+                            pair.Key +
+                            "': " +
+                            exception.Message);
+                    }
+                }
+            }
+
+            return snapshot;
+        }
+
+        private IEnumerator CacheMissingSelectorThumbnails(
+            string selectorKey,
+            List<CustomSelectInfo> infoList)
+        {
+            string cacheDirectory =
+                GetSelectorThumbnailCacheDirectory();
+            try
+            {
+                Directory.CreateDirectory(cacheDirectory);
+            }
+            catch (Exception exception)
+            {
+                selectorThumbnailCacheStatus =
+                    LC("Preview cache folder could not be created.");
+                StudioCharaEditor.Logger?.LogError(
+                    "Failed to create selector thumbnail cache folder '" +
+                    cacheDirectory +
+                    "': " +
+                    exception);
+                selectorThumbnailCacheCoroutine = null;
+                yield break;
+            }
+
+            HashSet<string> uniqueKeys =
+                new HashSet<string>(StringComparer.Ordinal);
+            List<CustomSelectInfo> missing =
+                new List<CustomSelectInfo>();
+            for (int index = 0;
+                 index < infoList.Count;
+                 index++)
+            {
+                CustomSelectInfo info = infoList[index];
+                if (info == null ||
+                    string.IsNullOrEmpty(info.assetBundle) ||
+                    string.IsNullOrEmpty(info.assetName))
+                {
+                    continue;
+                }
+
+                string texKey =
+                    info.assetBundle + "+" + info.assetName;
+                if (!uniqueKeys.Add(texKey))
+                {
+                    continue;
+                }
+
+                string cachePath =
+                    GetSelectorThumbnailCachePath(texKey);
+                if (!File.Exists(cachePath))
+                {
+                    missing.Add(info);
+                }
+            }
+
+            selectorThumbnailCacheTotal = missing.Count;
+            if (missing.Count == 0)
+            {
+                selectorThumbnailCacheStatus = string.Format(
+                    LC("Preview cache is current: {0} item(s)."),
+                    uniqueKeys.Count);
+                selectorThumbnailDiskMisses.Clear();
+                selectorThumbnailCacheCoroutine = null;
+                yield break;
+            }
+
+            int failures = 0;
+            int missingAssetFailures = 0;
+            int encodeFailures = 0;
+            int exceptionFailures = 0;
+            List<string> failureDetails = new List<string>();
+            for (int index = 0;
+                 index < missing.Count;
+                 index++)
+            {
+                CustomSelectInfo info = missing[index];
+                string texKey =
+                    info.assetBundle + "+" + info.assetName;
+                string cachePath =
+                    GetSelectorThumbnailCachePath(texKey);
+                Texture2D source =
+                    FindSelectorThumbnailInMemory(texKey);
+                try
+                {
+                    if (source == null)
+                    {
+                        source =
+                            LoadSelectorThumbnailFromBundle(info);
+                    }
+
+                    if (source == null ||
+                        source == Texture2D.blackTexture)
+                    {
+                        failures++;
+                        missingAssetFailures++;
+                        failureDetails.Add(
+                            FormatSelectorThumbnailCacheFailure(
+                                "MISSING_TEXTURE",
+                                info,
+                                null));
+                    }
+                    else if (TryWriteSelectorThumbnailCache(
+                                 source,
+                                 cachePath))
+                    {
+                        selectorThumbnailCacheWritten++;
+                    }
+                    else
+                    {
+                        failures++;
+                        encodeFailures++;
+                        failureDetails.Add(
+                            FormatSelectorThumbnailCacheFailure(
+                                "PNG_ENCODE_FAILED",
+                                info,
+                                null));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    failures++;
+                    exceptionFailures++;
+                    failureDetails.Add(
+                        FormatSelectorThumbnailCacheFailure(
+                            "EXCEPTION",
+                            info,
+                            exception.Message));
+                    StudioCharaEditor.Logger?.LogWarning(
+                        "Failed to cache selector preview '" +
+                        texKey +
+                        "': " +
+                        exception.Message);
+                }
+
+                source = null;
+                selectorThumbnailCacheProcessed = index + 1;
+                if ((index + 1) %
+                    SelectorThumbnailCacheCleanupInterval == 0)
+                {
+                    yield return Resources.UnloadUnusedAssets();
+                }
+                else
+                {
+                    yield return null;
+                }
+            }
+
+            selectorThumbnailDiskMisses.Clear();
+            WriteSelectorThumbnailCacheFailureReport(
+                cacheDirectory,
+                selectorKey,
+                failureDetails);
+            selectorThumbnailCacheStatus = string.Format(
+                LC("Cached {0} new; {1} missing texture(s); {2} encode failure(s); {3} error(s)."),
+                selectorThumbnailCacheWritten,
+                missingAssetFailures,
+                encodeFailures,
+                exceptionFailures);
+            StudioCharaEditor.Logger?.LogInfo(
+                "Selector preview cache updated for '" +
+                (selectorKey ?? string.Empty) +
+                "': cached=" +
+                selectorThumbnailCacheWritten +
+                ", failed=" +
+                failures +
+                " (missingTexture=" +
+                missingAssetFailures +
+                ", encodeFailed=" +
+                encodeFailures +
+                ", exceptions=" +
+                exceptionFailures +
+                ")" +
+                ", folder='" +
+                cacheDirectory +
+                "'.");
+            selectorThumbnailCacheCoroutine = null;
+        }
+
+        private static string FormatSelectorThumbnailCacheFailure(
+            string reason,
+            CustomSelectInfo info,
+            string message)
+        {
+            return string.Join(
+                "\t",
+                new[]
+                {
+                    reason ?? string.Empty,
+                    info?.id.ToString() ?? string.Empty,
+                    SanitizeSelectorThumbnailCacheReportValue(info?.name),
+                    SanitizeSelectorThumbnailCacheReportValue(info?.assetBundle),
+                    SanitizeSelectorThumbnailCacheReportValue(info?.assetName),
+                    SanitizeSelectorThumbnailCacheReportValue(message),
+                });
+        }
+
+        private static string SanitizeSelectorThumbnailCacheReportValue(
+            string value)
+        {
+            return string.IsNullOrEmpty(value)
+                ? string.Empty
+                : value.Replace("\t", " ")
+                    .Replace("\r", " ")
+                    .Replace("\n", " ");
+        }
+
+        private static void WriteSelectorThumbnailCacheFailureReport(
+            string cacheDirectory,
+            string selectorKey,
+            List<string> failureDetails)
+        {
+            string reportPath = Path.Combine(
+                cacheDirectory,
+                "failed-clothes-and-accessories-previews.tsv");
+            try
+            {
+                if (failureDetails == null ||
+                    failureDetails.Count == 0)
+                {
+                    if (File.Exists(reportPath))
+                    {
+                        File.Delete(reportPath);
+                    }
+                    return;
+                }
+
+                List<string> lines = new List<string>
+                {
+                    "reason\tid\tname\tassetBundle\tassetName\tmessage"
+                };
+                lines.AddRange(failureDetails);
+                File.WriteAllLines(
+                    reportPath,
+                    lines.ToArray(),
+                    new UTF8Encoding(false));
+            }
+            catch (Exception exception)
+            {
+                StudioCharaEditor.Logger?.LogWarning(
+                    "Failed to write selector preview cache failure report '" +
+                    reportPath +
+                    "': " +
+                    exception.Message);
+            }
+        }
+
+        private Texture2D FindSelectorThumbnailInMemory(
+            string texKey)
+        {
+            foreach (Dictionary<string, Texture2D> pool in
+                     thumbPool.Values)
+            {
+                if (pool != null &&
+                    pool.TryGetValue(
+                        texKey,
+                        out Texture2D texture) &&
+                    texture != null &&
+                    texture != Texture2D.blackTexture)
+                {
+                    return texture;
+                }
+            }
+
+            return null;
+        }
+
+        private Texture2D TryLoadSelectorThumbnailFromDisk(
+            string texKey,
+            string cachePath)
+        {
+            try
+            {
+                byte[] bytes = File.ReadAllBytes(cachePath);
+                Texture2D texture =
+                    new Texture2D(
+                        2,
+                        2,
+                        TextureFormat.RGBA32,
+                        false);
+                if (!ImageConversion.LoadImage(
+                        texture,
+                        bytes,
+                        true))
+                {
+                    Destroy(texture);
+                    throw new InvalidDataException(
+                        "ImageConversion.LoadImage returned false.");
+                }
+
+                texture.name =
+                    "StudioCharaEditor cached preview";
+                texture.wrapMode = TextureWrapMode.Clamp;
+                texture.filterMode = FilterMode.Bilinear;
+                selectorDiskTexturePool[texKey] = texture;
+                selectorDiskTextureLoadOrder.Enqueue(texKey);
+                TrimSelectorDiskTexturePool();
+                return texture;
+            }
+            catch (Exception exception)
+            {
+                selectorThumbnailDiskMisses.Add(texKey);
+                try
+                {
+                    if (File.Exists(cachePath))
+                    {
+                        File.Delete(cachePath);
+                    }
+                }
+                catch
+                {
+                }
+                StudioCharaEditor.Logger?.LogWarning(
+                    "Invalid selector preview cache entry '" +
+                    cachePath +
+                    "': " +
+                    exception.Message);
+                return null;
+            }
+        }
+
+        private string GetSelectorThumbnailCachePath(
+            string texKey)
+        {
+            if (selectorThumbnailCachePathPool.TryGetValue(
+                    texKey,
+                    out string cachedPath))
+            {
+                return cachedPath;
+            }
+
+            byte[] keyBytes =
+                Encoding.UTF8.GetBytes(texKey ?? string.Empty);
+            byte[] hash;
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                hash = sha256.ComputeHash(keyBytes);
+            }
+
+            StringBuilder name =
+                new StringBuilder(hash.Length * 2);
+            for (int index = 0;
+                 index < hash.Length;
+                 index++)
+            {
+                name.Append(
+                    hash[index].ToString("x2"));
+            }
+
+            string path = Path.Combine(
+                GetSelectorThumbnailCacheDirectory(),
+                name + ".png");
+            selectorThumbnailCachePathPool[texKey] = path;
+            return path;
+        }
+
+        private static string GetSelectorThumbnailCacheDirectory()
+        {
+            return GetSelectorThumbnailCacheDirectory(
+                SelectorThumbnailCacheVersion);
+        }
+
+        private static string GetSelectorThumbnailCacheDirectory(
+            string version)
+        {
+            return Path.Combine(
+                Paths.PluginPath,
+                "StudioCharaEditor",
+                SelectorThumbnailCacheFolderName,
+                version);
+        }
+
+        private static bool TryWriteSelectorThumbnailCache(
+            Texture2D source,
+            string cachePath)
+        {
+            if (source == null ||
+                source.width <= 0 ||
+                source.height <= 0 ||
+                string.IsNullOrEmpty(cachePath))
+            {
+                return false;
+            }
+
+            byte[] png = EncodeSelectorThumbnail(source);
+            if (png == null || png.Length == 0)
+            {
+                return false;
+            }
+
+            string directory =
+                Path.GetDirectoryName(cachePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            string temporaryPath =
+                cachePath + ".tmp";
+            File.WriteAllBytes(temporaryPath, png);
+            if (File.Exists(cachePath))
+            {
+                File.Delete(temporaryPath);
+                return true;
+            }
+
+            File.Move(temporaryPath, cachePath);
+            return true;
+        }
+
+        private static byte[] EncodeSelectorThumbnail(
+            Texture2D source)
+        {
+            int targetWidth = source.width;
+            int targetHeight = source.height;
+            int largestDimension =
+                Math.Max(targetWidth, targetHeight);
+            if (largestDimension >
+                SelectorThumbnailCacheMaxDimension)
+            {
+                float scale =
+                    (float)SelectorThumbnailCacheMaxDimension /
+                    largestDimension;
+                targetWidth =
+                    Math.Max(
+                        1,
+                        Mathf.RoundToInt(targetWidth * scale));
+                targetHeight =
+                    Math.Max(
+                        1,
+                        Mathf.RoundToInt(targetHeight * scale));
+                return ReadBackSelectorThumbnail(
+                    source,
+                    targetWidth,
+                    targetHeight);
+            }
+
+            try
+            {
+                byte[] png =
+                    ImageConversion.EncodeToPNG(source);
+                if (png != null && png.Length > 0)
+                {
+                    return png;
+                }
+            }
+            catch
+            {
+            }
+
+            return ReadBackSelectorThumbnail(
+                source,
+                targetWidth,
+                targetHeight);
+        }
+
+        private static byte[] ReadBackSelectorThumbnail(
+            Texture2D source,
+            int targetWidth,
+            int targetHeight)
+        {
+            RenderTexture temporary = null;
+            RenderTexture previous = RenderTexture.active;
+            Texture2D readable = null;
+            try
+            {
+                temporary = RenderTexture.GetTemporary(
+                    targetWidth,
+                    targetHeight,
+                    0,
+                    RenderTextureFormat.ARGB32);
+                temporary.filterMode = FilterMode.Bilinear;
+                Graphics.Blit(source, temporary);
+                RenderTexture.active = temporary;
+                readable = new Texture2D(
+                    targetWidth,
+                    targetHeight,
+                    TextureFormat.RGBA32,
+                    false);
+                readable.ReadPixels(
+                    new Rect(
+                        0f,
+                        0f,
+                        targetWidth,
+                        targetHeight),
+                    0,
+                    0,
+                    false);
+                readable.Apply(false, false);
+                return ImageConversion.EncodeToPNG(readable);
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                if (temporary != null)
+                {
+                    RenderTexture.ReleaseTemporary(temporary);
+                }
+                if (readable != null)
+                {
+                    Destroy(readable);
+                }
+            }
+        }
+
+        private void TrimSelectorDiskTexturePool()
+        {
+            while (selectorDiskTexturePool.Count >
+                       MaxRuntimeCachedSelectorThumbnails &&
+                   selectorDiskTextureLoadOrder.Count > 0)
+            {
+                string oldestKey =
+                    selectorDiskTextureLoadOrder.Dequeue();
+                if (!selectorDiskTexturePool.TryGetValue(
+                        oldestKey,
+                        out Texture2D texture))
+                {
+                    continue;
+                }
+
+                selectorDiskTexturePool.Remove(oldestKey);
+                foreach (Dictionary<string, Texture2D> pool in
+                         thumbPool.Values)
+                {
+                    pool?.Remove(oldestKey);
+                }
+                if (texture != null)
+                {
+                    Destroy(texture);
+                }
+            }
         }
 
         private void TrackSelectorScroll(Vector2 oldScroll, Vector2 newScroll)
@@ -5351,6 +6224,30 @@ namespace StudioCharaEditor
 
             selectorThumbLoadsThisFrame++;
             selectorNextThumbLoadTime = now + SelectorThumbLoadInterval;
+            return true;
+        }
+
+        private bool CanLoadCachedSelectorThumbnailThisFrame()
+        {
+            if (Event.current.type != EventType.Repaint)
+            {
+                return false;
+            }
+            if (selectorCachedThumbLoadFrame !=
+                Time.frameCount)
+            {
+                selectorCachedThumbLoadFrame =
+                    Time.frameCount;
+                selectorCachedThumbLoadsThisFrame = 0;
+            }
+
+            if (selectorCachedThumbLoadsThisFrame >=
+                MaxCachedSelectorThumbLoadsPerFrame)
+            {
+                return false;
+            }
+
+            selectorCachedThumbLoadsThisFrame++;
             return true;
         }
 

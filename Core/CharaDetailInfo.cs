@@ -321,12 +321,6 @@ namespace StudioCharaEditor
             cec.UpdateDetailInfo_ClothType(clothName);
         }
 
-        // Slots we already tried to rebuild the custom-texture stack for, keyed by chaCtrl instance + slot.
-        // InitBaseCustomTextureClothes allocates 2 CustomTextureCreate per texture layer (each owning a
-        // full-size RenderTexture + a cloned Material, plus a ReadPixels Texture2D) and overwrites
-        // ctCreateClothes/ctCreateClothesGloss with `= null` WITHOUT releasing the previous ones. Retrying
-        // it on every colour-drag tick (~16/s) therefore orphans hundreds of MB of VRAM per second whenever
-        // ChangeCustomClothes keeps returning false for an unrelated reason (e.g. no CmpClothes component).
         private static readonly HashSet<long> clothCustomTextureInitTried = new HashSet<long>();
 
         private static long ClothCustomTextureKey(ChaControl chaCtrl, int clothIndex)
@@ -352,16 +346,11 @@ namespace StudioCharaEditor
 
             if (!clothCustomTextureInitTried.Add(ClothCustomTextureKey(chaCtrl, clothIndex)))
             {
-                // Already rebuilt (or failed to rebuild) this slot since the last clothes change; retrying
-                // would only leak. Reset happens in updateClothTypeAsync when the slot actually changes.
                 return false;
             }
 
             try
             {
-                // Free whatever is currently in ctCreateClothes[slot,*] first — Init would otherwise just
-                // drop the references and leave the RenderTextures/Materials orphaned. This mirrors what
-                // vanilla ChangeClothesAsync does before its own InitBaseCustomTextureClothes call.
                 chaCtrl.ReleaseBaseCustomTextureClothes(clothIndex);
 
                 updated = chaCtrl.InitBaseCustomTextureClothes(clothIndex) &&
@@ -2780,15 +2769,18 @@ namespace StudioCharaEditor
                         throw new Exception();
                     chaCtrl.nowCoordinate.clothes.parts[clothIndexL].colorInfo[colorIndexL].layout = newLayout;
                     chaCtrl.chaFile.coordinate.clothes.parts[clothIndexL].colorInfo[colorIndexL].layout = newLayout;
-                    updateClothColorTexture(chaCtrl, clothIndexL, true, colorIndexL);
+                    updateClothColorTexture(chaCtrl, clothIndexL, true);
                 }
 
-                void updateClothColorTexture(ChaControl chaCtrl, int clothIndexL, bool updateColor, int forcePatternIndex = -1)
+                void updateClothColorTexture(ChaControl chaCtrl, int clothIndexL, bool updateColor, int changedPatternIndex = -1)
                 {
-                    ChaFileClothes.PartsInfo partsInfo = chaCtrl.nowCoordinate.clothes.parts[clothIndexL];
-                    bool updateTex01 = (forcePatternIndex == 0) || partsInfo.colorInfo[0].pattern != 0;
-                    bool updateTex02 = (forcePatternIndex == 1) || partsInfo.colorInfo[1].pattern != 0;
-                    bool updateTex03 = (forcePatternIndex == 2) || partsInfo.colorInfo[2].pattern != 0;
+                    // Match the native clothes editor: color, gloss, metallic and
+                    // layout changes rebuild the existing custom texture without
+                    // loading the pattern asset again. Repeated pattern loads grow
+                    // Manager.Character's asset-bundle list and reference counts.
+                    bool updateTex01 = changedPatternIndex == 0;
+                    bool updateTex02 = changedPatternIndex == 1;
+                    bool updateTex03 = changedPatternIndex == 2;
                     updateClothCustomTexture(chaCtrl, clothIndexL, updateColor, updateTex01, updateTex02, updateTex03);
                 }
 
@@ -2876,7 +2868,7 @@ namespace StudioCharaEditor
                         Set = (chaCtrl, v) => {
                             chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].patternColor = (Color)v;
                             chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].patternColor = (Color)v;
-                            updateClothColorTexture(chaCtrl, clothIndex, true, colorIndex);
+                            updateClothColorTexture(chaCtrl, clothIndex, true);
                         },
                     };
                     colorInfo.Add(patternColor);
@@ -2931,7 +2923,7 @@ namespace StudioCharaEditor
                         {
                             chaCtrl.nowCoordinate.clothes.parts[clothIndex].colorInfo[colorIndex].rotation = (float)v;
                             chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].rotation = (float)v;
-                            updateClothColorTexture(chaCtrl, clothIndex, true, colorIndex);
+                            updateClothColorTexture(chaCtrl, clothIndex, true);
                         },
                     };
                     colorInfo.Add(patternRotate);

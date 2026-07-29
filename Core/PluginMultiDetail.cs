@@ -21,6 +21,8 @@ namespace StudioCharaEditor
         internal const int SlotCount = 3;
 
         private static bool initialized;
+        private static bool initializationAttempted;
+        private static int initializationAssemblyCount = -1;
         private static Type controllerType;
         private static Type detailTargetType;
         private static MethodInfo getIdsMethod;
@@ -267,6 +269,15 @@ namespace StudioCharaEditor
                        applyFullBlendMethod != null;
             }
 
+            Assembly[] loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies();
+            int loadedAssemblyCount = loadedAssemblies.Length;
+            if (initializationAttempted && initializationAssemblyCount == loadedAssemblyCount)
+            {
+                return false;
+            }
+
+            initializationAttempted = true;
+            initializationAssemblyCount = loadedAssemblyCount;
             controllerType = FindType(ControllerTypeName);
             detailTargetType = FindType(DetailTargetTypeName);
             if (controllerType == null || detailTargetType == null)

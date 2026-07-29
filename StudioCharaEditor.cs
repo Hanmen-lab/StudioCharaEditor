@@ -24,7 +24,7 @@ namespace StudioCharaEditor
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "2.5.5";
+        public const string Version = "2.6.0";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -57,6 +57,7 @@ namespace StudioCharaEditor
 
         internal SimpleToolbarToggle _toolbarCharEditor;
         private Harmony harmony;
+        private GameObject editorRoot;
 
         //private ConfigEntry<string> configGreeting;
         //private ConfigEntry<bool> configDisplayGreeting;
@@ -65,6 +66,7 @@ namespace StudioCharaEditor
         {
             Instance = this;
             Logger = base.Logger;
+            RemoveStaleEditorRoots();
             Logger.LogInfo("Studio Chara Editor loaded.");
 
             // config
@@ -98,7 +100,7 @@ namespace StudioCharaEditor
             SelectorWindowHeight = Config.Bind("GUI", "Selector window height", 520f, "Remembered height of the item selector window.");
             ShowTimelineIcons = Config.Bind("GUI", "Show timeline icons", true, "Show the 'T' Timeline interpolation buttons next to character values when the Timeline plugin is installed.");
             ShowMultiDetailUI = Config.Bind("GUI", "Show multidetail plugin UI", true, "When the MultiDetail plugin is installed, replace the Body > Skin and Face > FaceType detail sliders with the multi-slot MultiDetail UI. Turn off to use the vanilla single-detail UI instead.");
-            ShowMultiDetailUI.SettingChanged += (_, __) => CharaEditorMgr.Instance?.RefreshAllControllerFileData();
+            ShowMultiDetailUI.SettingChanged += OnShowMultiDetailUISettingChanged;
 
             /*
             configGreeting = Config.Bind("General",   // The section under which the option is shown
@@ -115,9 +117,9 @@ namespace StudioCharaEditor
             PluginMoreAccessories.Initialize();
 
             // start
-            GameObject gameObject = new GameObject(Name);
-            UnityEngine.Object.DontDestroyOnLoad(gameObject);
-            CharaEditorMgr.Install(gameObject);
+            editorRoot = new GameObject(Name);
+            UnityEngine.Object.DontDestroyOnLoad(editorRoot);
+            CharaEditorMgr.Install(editorRoot);
 
             // Patch compatibility hooks that must run after optional plugin dependencies load.
             harmony = new Harmony(GUID);
@@ -133,6 +135,105 @@ namespace StudioCharaEditor
                 this,
                 val => ToggleUI(val));
             ToolbarManager.AddLeftToolbarControl(_toolbarCharEditor);
+        }
+
+        private void OnDestroy()
+        {
+            if (ShowMultiDetailUI != null)
+            {
+                ShowMultiDetailUI.SettingChanged -=
+                    OnShowMultiDetailUISettingChanged;
+            }
+
+            if (editorRoot != null)
+            {
+                // Disable immediately so no stale Update/OnGUI can run while
+                // Unity waits until the end of the frame to destroy the root.
+                editorRoot.SetActive(false);
+                UnityEngine.Object.Destroy(editorRoot);
+                editorRoot = null;
+            }
+
+            harmony?.UnpatchSelf();
+            harmony = null;
+            _toolbarCharEditor = null;
+            if (ReferenceEquals(Instance, this))
+            {
+                Instance = null;
+            }
+        }
+
+        private static void RemoveStaleEditorRoots()
+        {
+            GameObject[] gameObjects =
+                UnityEngine.Object.FindObjectsOfType<GameObject>();
+            int removed = 0;
+            for (int index = 0; index < gameObjects.Length; index++)
+            {
+                GameObject candidate = gameObjects[index];
+                if (candidate == null ||
+                    !string.Equals(
+                        candidate.name,
+                        Name,
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                Component[] components = candidate.GetComponents<Component>();
+                bool hasEditorManager = false;
+                for (int componentIndex = 0;
+                    componentIndex < components.Length;
+                    componentIndex++)
+                {
+                    Component component = components[componentIndex];
+                    if (component != null &&
+                        string.Equals(
+                            component.GetType().FullName,
+                            "StudioCharaEditor.CharaEditorMgr",
+                            StringComparison.Ordinal))
+                    {
+                        hasEditorManager = true;
+                        break;
+                    }
+                }
+
+                if (!hasEditorManager)
+                {
+                    continue;
+                }
+
+                candidate.SetActive(false);
+                UnityEngine.Object.Destroy(candidate);
+                removed++;
+            }
+
+            if (removed > 0)
+            {
+                Logger?.LogInfo(
+                    $"Removed {removed} stale Studio Chara Editor root object(s) before reload.");
+            }
+        }
+
+        private static void OnShowMultiDetailUISettingChanged(
+            object sender,
+            EventArgs eventArgs)
+        {
+            CharaEditorMgr.Instance?.RefreshAllControllerFileData();
+        }
+
+        internal static void SaveConfigNow()
+        {
+            try
+            {
+                Instance?.Config.Save();
+            }
+            catch (Exception exception)
+            {
+                Logger?.LogWarning(
+                    "Failed to save Studio Chara Editor configuration: " +
+                    exception.Message);
+            }
         }
 
         private void ToggleUI(bool show)

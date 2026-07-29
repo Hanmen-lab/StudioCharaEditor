@@ -333,6 +333,7 @@ namespace StudioCharaEditor
         public void InitFileData()
         {
             ChaControl chaCtrl = ociTarget.charInfo;
+            PluginPandarinkaToolkit.PrepareMaleCategories();
             myCategorySet = new Dictionary<string, List<string>>();
             myDetailDict = new Dictionary<string, CharaDetailInfo>();
             myDetailSet = new Dictionary<string, List<CharaDetailInfo>>();
@@ -553,6 +554,7 @@ namespace StudioCharaEditor
 
             // DONE
             InitTexture(true);
+            PluginPandarinkaToolkit.ConfigureController(this);
         }
 
         /// <summary>
