@@ -6,6 +6,8 @@
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <DevReloadDeployDir Condition="'$(DevReloadDeployDir)' == ''">D:\Downloads\New MOHS2\BepInEx\devreload\builds\StudioCharaEditor\</DevReloadDeployDir>
+    <DeployToDevReload Condition="'$(DeployToDevReload)' == ''">true</DeployToDevReload>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="HS2_BoobSettings">
@@ -56,6 +58,7 @@
     <EmbeddedResource Include="Resources\UI\ui_toggle_off.png" />
     <EmbeddedResource Include="Resources\UI\ui_toggle_on.png" />
     <EmbeddedResource Include="Resources\UI\ui_window.png" />
+    <EmbeddedResource Include="Resources\MainGameUI\*.png" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="ABMX.HS2ABMX" Version="5.4.0" />
@@ -69,4 +72,14 @@
     <PackageReference Include="OverlayMods.HoneySelect2" Version="7.1.2" />
   </ItemGroup>
   <PropertyGroup />
+  <Target Name="DeployPluginToDevReload" AfterTargets="Build" Condition="'$(DeployToDevReload)' == 'true' And '$(DevReloadDeployDir)' != ''">
+    <MakeDir Directories="$(DevReloadDeployDir)" />
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFiles="$(DevReloadDeployDir)$(TargetFileName)"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(TargetDir)$(TargetName).pdb"
+          DestinationFiles="$(DevReloadDeployDir)$(TargetName).pdb"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+  </Target>
 </Project>

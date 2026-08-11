@@ -16,13 +16,14 @@ using System.Runtime.ConstrainedExecution;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Xml.Linq;
 using UnityEngine;
 using static AIChara.ChaListDefine;
 
 namespace StudioCharaEditor
 {
-    class CharaEditorUI : MonoBehaviour
+    partial class CharaEditorUI : MonoBehaviour
     {
         enum SelectMode
         {
@@ -40,7 +41,7 @@ namespace StudioCharaEditor
 
         private readonly int windowID = 10123;
         private readonly int selectorWindowID = 10124;
-        private readonly string windowTitle = "Studio Charactor Editor";
+        private readonly string windowTitle = "Studio Character Editor";
         internal Rect windowRect = new Rect(0f, 300f, 600f, 400f);
         private Rect selectorWindowRect = new Rect(0f, 300f, 420f, 400f);
         private bool mouseInWindow = false;
@@ -133,10 +134,14 @@ namespace StudioCharaEditor
         private const int MaxSelectorRowsPerFrame = 20;
         private const int MaxSelectorGridCellsPerFrame = 48;
         private const int MaxSelectorThumbLoadsPerFrame = 1;
+        private const int MainGameMaxSelectorThumbLoadsPerFrame = 2;
         private const float SelectorThumbLoadIdleDelay = 0.25f;
         private const float SelectorThumbLoadInterval = 0.04f;
+        private const float MainGameSelectorThumbLoadInterval = 0.025f;
         private const float SelectorScrollChangeEpsilon = 0.5f;
         private const int MaxCachedSelectorThumbLoadsPerFrame = 4;
+        private const int MainGameMaxCachedSelectorThumbLoadsPerFrame = 7;
+        private const int MaxQueuedSelectorDiskThumbnailLoads = 48;
         private const int MaxRuntimeCachedSelectorThumbnails = 512;
         private const int SelectorThumbnailCacheCleanupInterval = 40;
         private const int SelectorThumbnailCacheMaxDimension = 256;
@@ -172,14 +177,22 @@ namespace StudioCharaEditor
             new Dictionary<string, Texture2D>(StringComparer.Ordinal);
         private readonly Queue<string> selectorDiskTextureLoadOrder =
             new Queue<string>();
+        private readonly LinkedList<SelectorDiskThumbnailLoadRequest> selectorDiskThumbnailLoadQueue =
+            new LinkedList<SelectorDiskThumbnailLoadRequest>();
+        private readonly Dictionary<string, LinkedListNode<SelectorDiskThumbnailLoadRequest>> selectorDiskThumbnailPendingLoads =
+            new Dictionary<string, LinkedListNode<SelectorDiskThumbnailLoadRequest>>(StringComparer.Ordinal);
+        private SelectorDiskThumbnailLoadRequest selectorDiskThumbnailActiveLoad;
+        private Task<byte[]> selectorDiskThumbnailReadTask;
         private readonly HashSet<string> selectorThumbnailDiskMisses =
             new HashSet<string>(StringComparer.Ordinal);
         private bool selectorFavoritesLoaded;
         private bool selectorCustomFoldersLoaded;
+        private bool selectorCustomFolderScopesMigrated;
         private bool selectorTranslationsLoaded;
         private int selectorFavoriteVersion;
         private int selectorCustomFolderVersion;
         private bool selectorWindowHasUserSize;
+        private bool selectorWindowPositionInitialized;
         private SelectorViewMode selectorDefaultViewMode = SelectorViewMode.Grid;
         private static readonly string[] HairSetKeys =
         {
@@ -225,6 +238,12 @@ namespace StudioCharaEditor
             public string SearchText;
             public int InfoCount;
             public bool IsValid;
+        }
+
+        private sealed class SelectorDiskThumbnailLoadRequest
+        {
+            public string TexKey;
+            public string CachePath;
         }
 
         private class SelectorSearchState
@@ -447,10 +466,21 @@ namespace StudioCharaEditor
             ClearSelectorCache();
         }
 
+        internal void PrepareToShow()
+        {
+            // A hidden editor must never reopen in the transient save dialog.
+            // Save is a child flow; MAIN is the persistent editor state.
+            if (guiMode == GuiModeType.SAVE)
+            {
+                guiMode = GuiModeType.MAIN;
+            }
+        }
+
         private void Start()
         {
             selectorDefaultViewMode = StudioCharaEditor.SelectorGridViewByDefault.Value ? SelectorViewMode.Grid : SelectorViewMode.List;
-            theme = new CharaEditorTheme();
+            activeThemeMode = StudioCharaEditor.UITheme.Value;
+            theme = new CharaEditorTheme(activeThemeMode);
             largeLabel = new GUIStyle("label");
             largeLabel.fontSize = 16;
             btnstyle = new GUIStyle("button");
@@ -470,6 +500,9 @@ namespace StudioCharaEditor
         {
             FlushPendingColorChanges(true);
             PersistSelectorWindowSize();
+            PersistMainGamePanelPositions();
+            StopMainGameCoordinateAction();
+            DisposeMainGameCoordinateCards();
 
             if (selectorThumbnailCacheCoroutine != null)
             {
@@ -486,6 +519,10 @@ namespace StudioCharaEditor
             }
             selectorDiskTexturePool.Clear();
             selectorDiskTextureLoadOrder.Clear();
+            selectorDiskThumbnailLoadQueue.Clear();
+            selectorDiskThumbnailPendingLoads.Clear();
+            selectorDiskThumbnailActiveLoad = null;
+            selectorDiskThumbnailReadTask = null;
             selectorThumbnailDiskMisses.Clear();
             selectorThumbnailCachePathPool.Clear();
 
@@ -513,9 +550,42 @@ namespace StudioCharaEditor
 
         private void EnsureTheme()
         {
-            if (theme == null)
+            // The export dialog is the proven, functional legacy window. It
+            // must keep the Modern skin even when the editor itself uses the
+            // Main Game layout; the larger Maker styles clip its bottom row.
+            CharaEditorUiTheme requestedMode = guiMode == GuiModeType.SAVE
+                ? CharaEditorUiTheme.Modern
+                : StudioCharaEditor.UITheme.Value;
+            if (theme == null || activeThemeMode != requestedMode)
             {
-                theme = new CharaEditorTheme();
+                theme?.Dispose();
+                activeThemeMode = requestedMode;
+                theme = new CharaEditorTheme(activeThemeMode);
+                largeLabel = null;
+                btnstyle = null;
+                windowStyle = null;
+                categoryButtonStyle = null;
+                texTextStyle = null;
+                colorSwatchButtonStyle = null;
+                closeButtonStyle = null;
+                resizeGripStyle = null;
+                selectorGridLabelStyle = null;
+                selectorTooltipStyle = null;
+                selectorSourceLabelStyle = null;
+                mainGameAuxiliaryLabelStyle = null;
+                mainGameStatusLabelStyle = null;
+                mainGameAuxiliaryValueStyle = null;
+                mainGameAuxiliaryButtonStyle = null;
+                mainGamePlayPauseButtonStyle = null;
+                mainGameAuxiliaryHeaderButtonStyle = null;
+                mainGameCollapsedWindowStyle = null;
+                mainGameCollapsedTitleStyle = null;
+                mainGameCoordinateCardLabelStyle = null;
+                mainGameCoordinateFolderStyle = null;
+                mainGameCoordinateFolderSelectedStyle = null;
+                mainGameCoordinateHeaderStyle = null;
+                mainGameCoordinateHeaderSelectedStyle = null;
+                detailPageSelect = SelectMode.Normal;
             }
 
             theme.Ensure(GUI.skin);
@@ -891,7 +961,7 @@ namespace StudioCharaEditor
         {
             if (VisibleGUI)
             {
-                float scale = StudioCharaEditor.UIScale.Value;
+                float scale = GetActiveGuiScale();
                 Matrix4x4 savedMatrix = GUI.matrix;
                 if (scale != 1f)
                     GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scale, scale, 1f));
@@ -909,16 +979,32 @@ namespace StudioCharaEditor
                     {
                         windowStyle = new GUIStyle(GUI.skin.window);
                     }
-                    Rect previousWindowRect = windowRect;
-                    windowRect = GUI.Window(windowID, windowRect, new GUI.WindowFunction(FuncWindowGUI), windowTitle, windowStyle);
+                    Rect previousWindowRect;
+                    if (UseMainGameLayout)
+                    {
+                        EnsureMainGamePanelRects();
+                        previousWindowRect = mainGameRightRect;
+                        DrawMainGameLayout();
+                    }
+                    else
+                    {
+                        previousWindowRect = windowRect;
+                        windowRect = GUI.Window(windowID, windowRect, new GUI.WindowFunction(FuncWindowGUI), windowTitle, windowStyle);
+                    }
+
                     if (selectorSidePanel != null)
                     {
                         FollowSelectorWindowMainMove(previousWindowRect);
                         ClampSelectorWindowToScreen();
+                        Vector2 selectorPositionBeforeWindow = selectorWindowRect.position;
                         selectorWindowRect = GUI.Window(selectorWindowID, selectorWindowRect, new GUI.WindowFunction(FuncSelectorWindowGUI), LC("Select item"), windowStyle);
+                        if ((selectorWindowRect.position - selectorPositionBeforeWindow).sqrMagnitude > 0.01f)
+                        {
+                            selectorWindowPositionInitialized = true;
+                        }
                     }
 
-                    mouseInWindow = windowRect.Contains(Event.current.mousePosition) ||
+                    mouseInWindow = GetEditorMouseRects().Any(rect => rect.Contains(Event.current.mousePosition)) ||
                                     (selectorSidePanel != null && selectorWindowRect.Contains(Event.current.mousePosition));
                     if (mouseInWindow)
                     {
@@ -940,16 +1026,35 @@ namespace StudioCharaEditor
 
         internal void PersistSelectorWindowSize()
         {
-            if (selectorWindowHasUserSize)
+            bool changed = false;
+            if (selectorWindowHasUserSize || selectorWindowPositionInitialized)
             {
                 StudioCharaEditor.SelectorWindowWidth.Value = selectorWindowRect.width;
                 StudioCharaEditor.SelectorWindowHeight.Value = selectorWindowRect.height;
+                changed = true;
+            }
+
+            if (selectorWindowPositionInitialized)
+            {
+                StudioCharaEditor.SelectorWindowX.Value = selectorWindowRect.x;
+                StudioCharaEditor.SelectorWindowY.Value = selectorWindowRect.y;
+                changed = true;
+            }
+
+            if (changed)
+            {
                 StudioCharaEditor.SaveConfigNow();
             }
         }
 
         private void PlaceSelectorWindowNearMain()
         {
+            if (selectorWindowPositionInitialized)
+            {
+                ClampSelectorWindowToScreen();
+                return;
+            }
+
             float width = selectorWindowHasUserSize
                 ? selectorWindowRect.width
                 : StudioCharaEditor.SelectorWindowWidth.Value;
@@ -957,24 +1062,33 @@ namespace StudioCharaEditor
                 ? selectorWindowRect.height
                 : StudioCharaEditor.SelectorWindowHeight.Value;
 
-            float x = windowRect.xMax + SelectorPanelGap;
-            float logicalScreenW = Screen.width / StudioCharaEditor.UIScale.Value;
-            if (x + width > logicalScreenW - 4f)
+            float x = StudioCharaEditor.SelectorWindowX.Value;
+            float y = StudioCharaEditor.SelectorWindowY.Value;
+            if (x < 0f || y < 0f)
             {
-                x = windowRect.x - width - SelectorPanelGap;
-            }
-            if (x < 4f)
-            {
-                x = Math.Max(4f, logicalScreenW - width - 4f);
+                Rect anchorRect = GetSelectorAnchorRect();
+                x = anchorRect.xMax + SelectorPanelGap;
+                y = anchorRect.y;
+                float logicalScreenW = Screen.width / GetActiveGuiScale();
+                if (x + width > logicalScreenW - 4f)
+                {
+                    x = anchorRect.x - width - SelectorPanelGap;
+                }
+                if (x < 4f)
+                {
+                    x = Math.Max(4f, logicalScreenW - width - 4f);
+                }
             }
 
-            selectorWindowRect = new Rect(x, windowRect.y, width, height);
+            selectorWindowRect = new Rect(x, y, width, height);
+            selectorWindowPositionInitialized = true;
             ClampSelectorWindowToScreen();
         }
 
         private void FollowSelectorWindowMainMove(Rect previousMainRect)
         {
-            Vector2 delta = new Vector2(windowRect.x - previousMainRect.x, windowRect.y - previousMainRect.y);
+            Rect currentRect = GetSelectorAnchorRect();
+            Vector2 delta = new Vector2(currentRect.x - previousMainRect.x, currentRect.y - previousMainRect.y);
             if (delta.sqrMagnitude <= 0.01f)
             {
                 return;
@@ -986,7 +1100,7 @@ namespace StudioCharaEditor
 
         private void ClampSelectorWindowToScreen()
         {
-            float scale = StudioCharaEditor.UIScale.Value;
+            float scale = GetActiveGuiScale();
             float logicalW = Screen.width / scale;
             float logicalH = Screen.height / scale;
             float maxWidth = Math.Max(SelectorMinWindowWidth, logicalW - 8f);
@@ -1000,6 +1114,7 @@ namespace StudioCharaEditor
         private void Update()
         {
             FlushPendingColorChanges(false);
+            ProcessQueuedSelectorDiskThumbnailLoad();
 
             // hotkey check
             if (StudioCharaEditor.KeyShowUI.Value.IsDown())
@@ -1028,11 +1143,13 @@ namespace StudioCharaEditor
 
                 if (VisibleGUI)
                 {
+                    PrepareToShow();
                     CharaEditorMgr.Instance.ReloadDictionary();
                     windowRect = new Rect(StudioCharaEditor.UIXPosition.Value,
                         StudioCharaEditor.UIYPosition.Value,
                         Math.Max(MinWindowWidth, StudioCharaEditor.UIWidth.Value),
                         Math.Max(MinWindowHeight, StudioCharaEditor.UIHeight.Value));
+                    EnsureMainGamePanelRects();
                 }
                 else
                 {
@@ -1041,6 +1158,7 @@ namespace StudioCharaEditor
                     StudioCharaEditor.UIWidth.Value = (int)windowRect.width;
                     StudioCharaEditor.UIHeight.Value = (int)windowRect.height;
                     PersistSelectorWindowSize();
+                    PersistMainGamePanelPositions();
                 }
             }
 
@@ -1281,6 +1399,7 @@ namespace StudioCharaEditor
                         throw new Exception("Unknown gui mode");
                 }
 
+                DrawModernThemeSwitchButton();
                 DrawResizeGrip();
                 GUI.DragWindow(new Rect(0f, 0f, Math.Max(0f, windowRect.width - 24f), 24f));
             }
@@ -1292,6 +1411,31 @@ namespace StudioCharaEditor
             finally
             {
 
+            }
+        }
+
+        private void DrawModernThemeSwitchButton()
+        {
+            if (activeThemeMode != CharaEditorUiTheme.Modern)
+            {
+                return;
+            }
+
+            Rect buttonRect = new Rect(5f, 3f, 22f, 22f);
+            bool hover = buttonRect.Contains(Event.current.mousePosition);
+            Texture2D texture = hover
+                ? theme.MainGameExitSelectedTexture
+                : theme.MainGameExitNormalTexture;
+            if (texture != null)
+            {
+                GUI.DrawTexture(buttonRect, texture, ScaleMode.ScaleToFit, true);
+            }
+
+            if (GUI.Button(buttonRect, GUIContent.none, GUIStyle.none))
+            {
+                PersistSelectorWindowSize();
+                StudioCharaEditor.UITheme.Value = CharaEditorUiTheme.MainGame;
+                StudioCharaEditor.SaveConfigNow();
             }
         }
 
@@ -1531,6 +1675,24 @@ namespace StudioCharaEditor
 
         private void DrawSelectorCloseButton()
         {
+            Rect selectedRect = new Rect(selectorWindowRect.width - 38f, 3f, 16f, 16f);
+            GUIStyle selectedStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 16,
+                alignment = TextAnchor.MiddleCenter,
+                contentOffset = new Vector2(0f, -1f)
+            };
+            selectedStyle.normal.background = null;
+            selectedStyle.hover.background = null;
+            selectedStyle.active.background = null;
+            selectedStyle.normal.textColor = Color.white;
+            selectedStyle.hover.textColor = new Color32(112, 205, 67, 255);
+            selectedStyle.active.textColor = new Color32(112, 205, 67, 255);
+            selectedStyle.focused.textColor = new Color32(112, 205, 67, 255);
+            if (GUI.Button(selectedRect, "▼", selectedStyle) && selectorSidePanel != null)
+            {
+                selectorSidePanel.PendingScrollToSelected = true;
+            }
             Rect cbRect = new Rect(selectorWindowRect.width - 18f, 3f, 14f, 14f);
             if (GUI.Button(cbRect, string.Empty, closeButtonStyle ?? GUI.skin.button))
             {
@@ -1567,8 +1729,8 @@ namespace StudioCharaEditor
                           selectorThumbnailCacheCoroutine == null;
             if (GUILayout.Button(
                     new GUIContent(
-                        LC("Cache missing clothes and accessories previews"),
-                        LC("Saves missing previews from every clothing and accessory category to BepInEx/Plugins/StudioCharaEditor/ThumbnailCache.")),
+                        LC("Cache all previews"),
+                        LC("Saves every missing character-editor preview to BepInEx/Plugins/StudioCharaEditor/ThumbnailCache.")),
                     GUILayout.Width(360f)))
             {
                 StartSelectorThumbnailCache(panel);
@@ -2061,7 +2223,57 @@ namespace StudioCharaEditor
                 return CharaEditorController.CT1_ACCS + "#Acc ID";
             }
 
-            return selectorKey;
+            return NormalizeSelectorFolderScope(selectorKey);
+        }
+
+        private static string NormalizeSelectorFolderScope(string scope)
+        {
+            if (string.IsNullOrEmpty(scope))
+            {
+                return string.Empty;
+            }
+
+            const string bodyPaint1Prefix = "Body#Paint1#";
+            const string bodyPaint2Prefix = "Body#Paint2#";
+            const string bodyPaintSharedPrefix = "Body#Paint#";
+            if (scope.StartsWith(bodyPaint1Prefix, StringComparison.Ordinal) ||
+                scope.StartsWith(bodyPaint2Prefix, StringComparison.Ordinal))
+            {
+                return bodyPaintSharedPrefix +
+                       scope.Substring(bodyPaint1Prefix.Length);
+            }
+
+            const string facePaint1Prefix = "Face#MakeupPaint1#";
+            const string facePaint2Prefix = "Face#MakeupPaint2#";
+            const string facePaintSharedPrefix = "Face#MakeupPaint#";
+            if (scope.StartsWith(facePaint1Prefix, StringComparison.Ordinal) ||
+                scope.StartsWith(facePaint2Prefix, StringComparison.Ordinal))
+            {
+                return facePaintSharedPrefix +
+                       scope.Substring(facePaint1Prefix.Length);
+            }
+
+            return scope;
+        }
+
+        private static string NormalizeSelectorFavoriteStorageKey(string key)
+        {
+            if (string.IsNullOrEmpty(key))
+            {
+                return string.Empty;
+            }
+
+            int separator = key.IndexOf('|');
+            if (separator < 0)
+            {
+                return key;
+            }
+
+            string scope = key.Substring(0, separator);
+            string normalizedScope = NormalizeSelectorFolderScope(scope);
+            return string.Equals(scope, normalizedScope, StringComparison.Ordinal)
+                ? key
+                : normalizedScope + key.Substring(separator);
         }
 
         private void EnsureSelectorFavoritesLoaded()
@@ -2081,14 +2293,25 @@ namespace StudioCharaEditor
                     return;
                 }
 
+                bool migrated = false;
                 string[] lines = File.ReadAllLines(path);
                 for (int i = 0; i < lines.Length; i++)
                 {
                     string line = lines[i]?.Trim();
                     if (!string.IsNullOrEmpty(line))
                     {
-                        selectorFavoriteKeys.Add(line);
+                        string normalizedLine =
+                            NormalizeSelectorFavoriteStorageKey(line);
+                        migrated |= !string.Equals(
+                            line,
+                            normalizedLine,
+                            StringComparison.Ordinal);
+                        selectorFavoriteKeys.Add(normalizedLine);
                     }
+                }
+                if (migrated)
+                {
+                    SaveSelectorFavorites();
                 }
             }
             catch (Exception ex)
@@ -2380,12 +2603,17 @@ namespace StudioCharaEditor
 
             selectorCustomFoldersLoaded = true;
             selectorCustomFoldersByScope.Clear();
+            selectorCustomFolderScopesMigrated = false;
             string path = GetSelectorCustomFoldersPath();
             try
             {
                 if (File.Exists(path))
                 {
                     LoadSelectorCustomFoldersXml(path);
+                    if (selectorCustomFolderScopesMigrated)
+                    {
+                        SaveSelectorCustomFolders();
+                    }
                     return;
                 }
 
@@ -2427,7 +2655,14 @@ namespace StudioCharaEditor
         {
             foreach (XElement folderElement in folderElements)
             {
-                string scope = FirstNotEmpty((string)folderElement.Attribute("scope"), parentScope);
+                string storedScope = FirstNotEmpty(
+                    (string)folderElement.Attribute("scope"),
+                    parentScope);
+                string scope = NormalizeSelectorFolderScope(storedScope);
+                selectorCustomFolderScopesMigrated |= !string.Equals(
+                    storedScope,
+                    scope,
+                    StringComparison.Ordinal);
                 string name = NormalizeSelectorFolderName((string)folderElement.Attribute("name"));
                 if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name))
                 {
@@ -2473,7 +2708,8 @@ namespace StudioCharaEditor
                     continue;
                 }
 
-                string scope = DecodeSelectorFolderField(parts[1]);
+                string scope = NormalizeSelectorFolderScope(
+                    DecodeSelectorFolderField(parts[1]));
                 string name = NormalizeSelectorFolderName(DecodeSelectorFolderField(parts[2]));
                 if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name))
                 {
@@ -3524,8 +3760,8 @@ namespace StudioCharaEditor
 
         private void guiEditorMain()
         {
-            float fullw = windowRect.width - 20;
-            float fullh = windowRect.height - 20;
+            float fullw = ActiveEditorWindowWidth - 20;
+            float fullh = ActiveEditorWindowHeight - 20;
             float leftw = 150;
             float rightw = fullw - 8 - leftw - 5;
 
@@ -4222,7 +4458,7 @@ namespace StudioCharaEditor
             }
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC(name), GUILayout.Width(namew));
+            GUILayout.Label(LC(name), GUILayout.Width(namew), GUILayout.MinHeight(26f));
             DrawTimelineButton(chaCtrl, name, dInfo);
             string txtV;
             int inputw;
@@ -4315,7 +4551,7 @@ namespace StudioCharaEditor
             }
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC(name), GUILayout.Width(namew));
+            GUILayout.Label(LC(name), GUILayout.Width(namew), GUILayout.MinHeight(26f));
             DrawTimelineButton(chaCtrl, name, dInfo);
             Texture2D colorTex = GetColorSwatchTexture(dInfo.DetailDefine.Key, oldC);
             if (GUILayout.Button(colorTex, colorSwatchButtonStyle ?? GUI.skin.button, GUILayout.Height(ColorSwatchHeight), GUILayout.Width(ColorSwatchWidth)))
@@ -4334,8 +4570,8 @@ namespace StudioCharaEditor
 
         private void guiRenderSelector(ChaControl chaCtrl, string name, CharaDetailInfo dInfo)
         {
-            float fullw = windowRect.width - 20;
-            float fullh = windowRect.height - 20;
+            float fullw = ActiveEditorWindowWidth - 20;
+            float fullh = ActiveEditorWindowHeight - 20;
             float leftw = 150;
             float rightw = fullw - 8 - leftw - 5;
             float thumbBtnWidth = rightw - namew - thumbSize - 60;
@@ -4441,7 +4677,7 @@ namespace StudioCharaEditor
 
             // title line
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC(name), GUILayout.Width(namew));
+            GUILayout.Label(LC(name), GUILayout.Width(namew), GUILayout.MinHeight(26f));
             if (thumbList && showSmallThumbMode && !expandPool[name])
             {
                 Texture2D tex = oldIndex >= 0 ? getThumbTex(infoLst[oldIndex]) : Texture2D.blackTexture;
@@ -4649,7 +4885,7 @@ namespace StudioCharaEditor
             float dim2 = preciseMode ? vDefine.DimStep2 / 10 : vDefine.DimStep2;
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC(name), GUILayout.Width(namew));
+            GUILayout.Label(LC(name), GUILayout.Width(namew), GUILayout.MinHeight(26f));
             DrawTimelineButton(chaCtrl, name, dInfo);
             // dec buttons
             if (GUILayout.RepeatButton("<<", GUILayout.Width(30)))
@@ -4724,7 +4960,7 @@ namespace StudioCharaEditor
             CharaIntStatusDetailDefine vDefine = (CharaIntStatusDetailDefine)dInfo.DetailDefine;
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC(name), GUILayout.Width(namew));
+            GUILayout.Label(LC(name), GUILayout.Width(namew), GUILayout.MinHeight(26f));
             DrawTimelineButton(chaCtrl, name, dInfo);
             // int selector
             int num = vDefine.IntStatus.Length;
@@ -5050,7 +5286,7 @@ namespace StudioCharaEditor
 
             // Overlay block
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC(name), GUILayout.Width(namew));
+            GUILayout.Label(LC(name), GUILayout.Width(namew), GUILayout.MinHeight(26f));
             if (tex != null)
                 GUILayout.Box(tex, GUILayout.Width(OverlayThumbSize), GUILayout.Height(OverlayThumbSize));
             else
@@ -5078,7 +5314,7 @@ namespace StudioCharaEditor
 
             // Overlay block
             GUILayout.BeginHorizontal();
-            GUILayout.Label(LC(name), GUILayout.Width(namew));
+            GUILayout.Label(LC(name), GUILayout.Width(namew), GUILayout.MinHeight(26f));
             if (texData != null && texData.Texture != null)
                 GUILayout.Box(texData.Texture, GUILayout.Width(OverlayThumbSize), GUILayout.Height(OverlayThumbSize));
             else
@@ -5267,11 +5503,14 @@ namespace StudioCharaEditor
                         }
                         string filename = Path.Combine(savingPath, validCoordName);
 
+                        Directory.CreateDirectory(savingPath);
+
                         // trick KKAPI
                         //CharaEditorMgr.SetMakerApiInsideMaker(true);
                         //CharaEditorMgr.SetCustomBase(savingChara.charInfo);
 
                         savingChaFile.coordinate.SaveFile(filename, (int)Manager.GameSystem.Instance.language);
+                        mainGameCoordinateCardsNeedRefresh = true;
                         StudioCharaEditor.Logger.Log(LogLevel.Message | LogLevel.Warning, string.Format("Charactor {0}'s coordinate saved to {1}.", savingChaFile.parameter.fullname, validCoordName));
                         guiMode = GuiModeType.MAIN;
                     }
@@ -5321,7 +5560,9 @@ namespace StudioCharaEditor
             Rect cbRect = new Rect(windowRect.width - 18, 3, 14, 14);
             if (GUI.Button(cbRect, "", closeButtonStyle ?? GUI.skin.button))
             {
-                VisibleGUI = false;
+                // Closing the save dialog means returning to the editor. It
+                // must not hide the editor or leave guiMode stuck on SAVE.
+                guiMode = GuiModeType.MAIN;
             }
         }
 
@@ -5456,9 +5697,17 @@ namespace StudioCharaEditor
                 bool cacheExists =
                     !selectorThumbnailDiskMisses.Contains(texKey) &&
                     File.Exists(cachePath);
+                bool thumbnailLoadPaused = IsSelectorThumbnailLoadPaused();
                 if (cacheExists)
                 {
-                    if (!CanLoadCachedSelectorThumbnailThisFrame())
+                    if (thumbnailLoadPaused && UseMainGameLayout)
+                    {
+                        QueueSelectorThumbnailDiskLoad(texKey, cachePath);
+                        return Texture2D.blackTexture;
+                    }
+
+                    if (thumbnailLoadPaused ||
+                        !CanLoadCachedSelectorThumbnailThisFrame())
                     {
                         return Texture2D.blackTexture;
                     }
@@ -5478,7 +5727,7 @@ namespace StudioCharaEditor
                     selectorThumbnailDiskMisses.Add(texKey);
                 }
 
-                if (IsSelectorThumbnailLoadPaused() || !CanLoadSelectorThumbnailThisFrame())
+                if (thumbnailLoadPaused || !CanLoadSelectorThumbnailThisFrame())
                 {
                     return Texture2D.blackTexture;
                 }
@@ -5545,7 +5794,7 @@ namespace StudioCharaEditor
                 LC("Scanning preview cache...");
             selectorThumbnailCacheCoroutine = StartCoroutine(
                 CacheMissingSelectorThumbnails(
-                    "ClothesAndAccessories",
+                    "AllPreviews",
                     snapshot));
         }
 
@@ -5560,6 +5809,76 @@ namespace StudioCharaEditor
                 string.IsNullOrEmpty(panel.SelectorKey))
             {
                 return snapshot;
+            }
+
+            // Face skin choices are filtered to the currently selected head in
+            // the normal selector. Cache the complete category so changing the
+            // face type later does not reveal uncached previews.
+            try
+            {
+                ChaListDefine.CategoryNo faceSkinCategory =
+                    panel.ChaCtrl.sex == 0
+                        ? ChaListDefine.CategoryNo.mt_skin_f
+                        : ChaListDefine.CategoryNo.ft_skin_f;
+                List<CustomSelectInfo> allFaceSkins =
+                    CvsBase.CreateSelectList(
+                        faceSkinCategory,
+                        ChaListDefine.KeyType.HeadID);
+                if (allFaceSkins != null)
+                {
+                    snapshot.AddRange(allFaceSkins);
+                }
+            }
+            catch (Exception exception)
+            {
+                StudioCharaEditor.Logger?.LogWarning(
+                    "Failed to enumerate all face skin previews: " +
+                    exception.Message);
+            }
+
+            // Enumerate clothing explicitly. Some clothes detail pages are
+            // created lazily, so relying only on myDetailSet omitted categories
+            // that had not been opened during this editor session.
+            ChaListDefine.CategoryNo[] clothesCategories = panel.ChaCtrl.sex == 0
+                ? new[]
+                {
+                    ChaListDefine.CategoryNo.mo_top,
+                    ChaListDefine.CategoryNo.mo_bot,
+                    ChaListDefine.CategoryNo.mo_gloves,
+                    ChaListDefine.CategoryNo.mo_shoes,
+                }
+                : new[]
+                {
+                    ChaListDefine.CategoryNo.fo_top,
+                    ChaListDefine.CategoryNo.fo_bot,
+                    ChaListDefine.CategoryNo.fo_inner_t,
+                    ChaListDefine.CategoryNo.fo_inner_b,
+                    ChaListDefine.CategoryNo.fo_gloves,
+                    ChaListDefine.CategoryNo.fo_panst,
+                    ChaListDefine.CategoryNo.fo_socks,
+                    ChaListDefine.CategoryNo.fo_shoes,
+                };
+            for (int clothesIndex = 0;
+                 clothesIndex < clothesCategories.Length;
+                 clothesIndex++)
+            {
+                try
+                {
+                    List<CustomSelectInfo> clothes =
+                        CvsBase.CreateSelectList(clothesCategories[clothesIndex]);
+                    if (clothes != null)
+                    {
+                        snapshot.AddRange(clothes);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    StudioCharaEditor.Logger?.LogWarning(
+                        "Failed to enumerate clothing previews for category '" +
+                        clothesCategories[clothesIndex] +
+                        "': " +
+                        exception.Message);
+                }
             }
 
             List<CustomSelectInfo> categories =
@@ -5603,9 +5922,6 @@ namespace StudioCharaEditor
                      pair in controller.myDetailSet)
             {
                 if (string.IsNullOrEmpty(pair.Key) ||
-                    !pair.Key.StartsWith(
-                        CharaEditorController.CT1_CTHS + "#",
-                        StringComparison.Ordinal) ||
                     pair.Value == null)
                 {
                     continue;
@@ -5636,7 +5952,7 @@ namespace StudioCharaEditor
                     catch (Exception exception)
                     {
                         StudioCharaEditor.Logger?.LogWarning(
-                            "Failed to enumerate clothing previews for '" +
+                            "Failed to enumerate previews for '" +
                             pair.Key +
                             "': " +
                             exception.Message);
@@ -5912,25 +6228,161 @@ namespace StudioCharaEditor
             return null;
         }
 
+        private void QueueSelectorThumbnailDiskLoad(
+            string texKey,
+            string cachePath)
+        {
+            if (string.IsNullOrEmpty(texKey) ||
+                string.IsNullOrEmpty(cachePath) ||
+                selectorDiskTexturePool.ContainsKey(texKey) ||
+                string.Equals(
+                    selectorDiskThumbnailActiveLoad?.TexKey,
+                    texKey,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (selectorDiskThumbnailPendingLoads.TryGetValue(
+                    texKey,
+                    out LinkedListNode<SelectorDiskThumbnailLoadRequest> existingNode))
+            {
+                existingNode.Value.CachePath = cachePath;
+                selectorDiskThumbnailLoadQueue.Remove(existingNode);
+                selectorDiskThumbnailLoadQueue.AddFirst(existingNode);
+                return;
+            }
+
+            SelectorDiskThumbnailLoadRequest request =
+                new SelectorDiskThumbnailLoadRequest
+                {
+                    TexKey = texKey,
+                    CachePath = cachePath
+                };
+            LinkedListNode<SelectorDiskThumbnailLoadRequest> node =
+                selectorDiskThumbnailLoadQueue.AddFirst(request);
+            selectorDiskThumbnailPendingLoads[texKey] = node;
+
+            while (selectorDiskThumbnailLoadQueue.Count >
+                   MaxQueuedSelectorDiskThumbnailLoads)
+            {
+                LinkedListNode<SelectorDiskThumbnailLoadRequest> oldest =
+                    selectorDiskThumbnailLoadQueue.Last;
+                selectorDiskThumbnailLoadQueue.RemoveLast();
+                if (oldest?.Value?.TexKey != null)
+                {
+                    selectorDiskThumbnailPendingLoads.Remove(
+                        oldest.Value.TexKey);
+                }
+            }
+        }
+
+        private void ProcessQueuedSelectorDiskThumbnailLoad()
+        {
+            if (selectorDiskThumbnailActiveLoad != null)
+            {
+                if (selectorDiskThumbnailReadTask == null ||
+                    !selectorDiskThumbnailReadTask.IsCompleted)
+                {
+                    return;
+                }
+
+                SelectorDiskThumbnailLoadRequest completedRequest =
+                    selectorDiskThumbnailActiveLoad;
+                Task<byte[]> completedTask = selectorDiskThumbnailReadTask;
+                selectorDiskThumbnailActiveLoad = null;
+                selectorDiskThumbnailReadTask = null;
+
+                if (!selectorDiskTexturePool.ContainsKey(
+                        completedRequest.TexKey))
+                {
+                    try
+                    {
+                        TryCreateSelectorThumbnailFromBytes(
+                            completedRequest.TexKey,
+                            completedRequest.CachePath,
+                            completedTask.GetAwaiter().GetResult());
+                    }
+                    catch (Exception exception)
+                    {
+                        InvalidateSelectorThumbnailCacheEntry(
+                            completedRequest.TexKey,
+                            completedRequest.CachePath,
+                            exception);
+                    }
+                }
+            }
+
+            // Once scrolling has settled, OnGUI's existing fast path loads the
+            // currently visible cached previews in a batch. Drop old queued
+            // requests so items that are no longer visible do not consume
+            // frames after the user has stopped.
+            if (Time.realtimeSinceStartup >= selectorThumbLoadPauseUntil)
+            {
+                selectorDiskThumbnailLoadQueue.Clear();
+                selectorDiskThumbnailPendingLoads.Clear();
+                return;
+            }
+
+            while (selectorDiskThumbnailActiveLoad == null &&
+                   selectorDiskThumbnailLoadQueue.Count > 0)
+            {
+                LinkedListNode<SelectorDiskThumbnailLoadRequest> next =
+                    selectorDiskThumbnailLoadQueue.First;
+                selectorDiskThumbnailLoadQueue.RemoveFirst();
+                SelectorDiskThumbnailLoadRequest request = next.Value;
+                selectorDiskThumbnailPendingLoads.Remove(request.TexKey);
+                if (selectorDiskTexturePool.ContainsKey(request.TexKey))
+                {
+                    continue;
+                }
+
+                selectorDiskThumbnailActiveLoad = request;
+                selectorDiskThumbnailReadTask = Task.Run(
+                    () => File.ReadAllBytes(request.CachePath));
+            }
+        }
+
         private Texture2D TryLoadSelectorThumbnailFromDisk(
             string texKey,
             string cachePath)
         {
             try
             {
-                byte[] bytes = File.ReadAllBytes(cachePath);
-                Texture2D texture =
-                    new Texture2D(
-                        2,
-                        2,
-                        TextureFormat.RGBA32,
-                        false);
-                if (!ImageConversion.LoadImage(
+                return TryCreateSelectorThumbnailFromBytes(
+                    texKey,
+                    cachePath,
+                    File.ReadAllBytes(cachePath));
+            }
+            catch (Exception exception)
+            {
+                InvalidateSelectorThumbnailCacheEntry(
+                    texKey,
+                    cachePath,
+                    exception);
+                return null;
+            }
+        }
+
+        private Texture2D TryCreateSelectorThumbnailFromBytes(
+            string texKey,
+            string cachePath,
+            byte[] bytes)
+        {
+            Texture2D texture =
+                new Texture2D(
+                    2,
+                    2,
+                    TextureFormat.RGBA32,
+                    false);
+            try
+            {
+                if (bytes == null ||
+                    !ImageConversion.LoadImage(
                         texture,
                         bytes,
                         true))
                 {
-                    Destroy(texture);
                     throw new InvalidDataException(
                         "ImageConversion.LoadImage returned false.");
                 }
@@ -5944,26 +6396,34 @@ namespace StudioCharaEditor
                 TrimSelectorDiskTexturePool();
                 return texture;
             }
-            catch (Exception exception)
+            catch
             {
-                selectorThumbnailDiskMisses.Add(texKey);
-                try
-                {
-                    if (File.Exists(cachePath))
-                    {
-                        File.Delete(cachePath);
-                    }
-                }
-                catch
-                {
-                }
-                StudioCharaEditor.Logger?.LogWarning(
-                    "Invalid selector preview cache entry '" +
-                    cachePath +
-                    "': " +
-                    exception.Message);
-                return null;
+                Destroy(texture);
+                throw;
             }
+        }
+
+        private void InvalidateSelectorThumbnailCacheEntry(
+            string texKey,
+            string cachePath,
+            Exception exception)
+        {
+            selectorThumbnailDiskMisses.Add(texKey);
+            try
+            {
+                if (File.Exists(cachePath))
+                {
+                    File.Delete(cachePath);
+                }
+            }
+            catch
+            {
+            }
+            StudioCharaEditor.Logger?.LogWarning(
+                "Invalid selector preview cache entry '" +
+                cachePath +
+                "': " +
+                (exception?.GetBaseException().Message ?? "Unknown error"));
         }
 
         private string GetSelectorThumbnailCachePath(
@@ -6211,7 +6671,10 @@ namespace StudioCharaEditor
                 selectorThumbLoadsThisFrame = 0;
             }
 
-            if (selectorThumbLoadsThisFrame >= MaxSelectorThumbLoadsPerFrame)
+            int maximumLoads = UseMainGameLayout
+                ? MainGameMaxSelectorThumbLoadsPerFrame
+                : MaxSelectorThumbLoadsPerFrame;
+            if (selectorThumbLoadsThisFrame >= maximumLoads)
             {
                 return false;
             }
@@ -6223,7 +6686,9 @@ namespace StudioCharaEditor
             }
 
             selectorThumbLoadsThisFrame++;
-            selectorNextThumbLoadTime = now + SelectorThumbLoadInterval;
+            selectorNextThumbLoadTime = now + (UseMainGameLayout
+                ? MainGameSelectorThumbLoadInterval
+                : SelectorThumbLoadInterval);
             return true;
         }
 
@@ -6241,8 +6706,10 @@ namespace StudioCharaEditor
                 selectorCachedThumbLoadsThisFrame = 0;
             }
 
-            if (selectorCachedThumbLoadsThisFrame >=
-                MaxCachedSelectorThumbLoadsPerFrame)
+            int maximumLoads = UseMainGameLayout
+                ? MainGameMaxCachedSelectorThumbLoadsPerFrame
+                : MaxCachedSelectorThumbLoadsPerFrame;
+            if (selectorCachedThumbLoadsThisFrame >= maximumLoads)
             {
                 return false;
             }

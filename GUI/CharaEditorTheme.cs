@@ -12,6 +12,7 @@ namespace StudioCharaEditor
     internal sealed class CharaEditorTheme : IDisposable
     {
         private readonly List<UnityEngine.Object> ownedResources = new List<UnityEngine.Object>();
+        private readonly CharaEditorUiTheme mode;
 
         public GUISkin Skin { get; private set; }
         public GUIStyle WindowStyle { get; private set; }
@@ -23,6 +24,29 @@ namespace StudioCharaEditor
         public GUIStyle CloseButtonStyle { get; private set; }
         public Texture2D ToggleOffTexture { get; private set; }
         public Texture2D ToggleOnTexture { get; private set; }
+        public Texture2D MainGameCheckboxOffTexture { get; private set; }
+        public Texture2D MainGameCheckboxOnTexture { get; private set; }
+        public Texture2D MainGameSelectorSelectedTexture { get; private set; }
+        public Texture2D MainGameSliderTrackTexture { get; private set; }
+        public Texture2D MainGameExitNormalTexture { get; private set; }
+        public Texture2D MainGameExitSelectedTexture { get; private set; }
+        public GUIStyle MainGameTransparentWindowStyle { get; private set; }
+        public GUIStyle MainGamePanelWindowStyle { get; private set; }
+        public GUIStyle MainGameSectionHeaderStyle { get; private set; }
+        public GUIStyle MainGameListButtonStyle { get; private set; }
+        public GUIStyle MainGameListSelectedStyle { get; private set; }
+        public GUIStyle MainGameListMultiSelectedStyle { get; private set; }
+        public GUIStyle MainGameIconButtonStyle { get; private set; }
+        public GUIStyle MainGameTitleStyle { get; private set; }
+        public GUIStyle MainGameBreadcrumbStyle { get; private set; }
+        public GUIStyle MainGameTabStyle { get; private set; }
+        public GUIStyle MainGameTabSelectedStyle { get; private set; }
+        public GUIStyle MainGameNumericValueStyle { get; private set; }
+        public Texture2D[] MainGameCategoryNormal { get; private set; }
+        public Texture2D[] MainGameCategorySelected { get; private set; }
+        public Texture2D MainGameDividerTexture { get; private set; }
+
+        public bool IsMainGame => mode == CharaEditorUiTheme.MainGame;
 
         private static readonly Color TextColor = Rgba(232, 238, 241);
         private static readonly Color MutedTextColor = Rgba(174, 185, 191);
@@ -40,6 +64,11 @@ namespace StudioCharaEditor
         private const int HwndBroadcast = 0xffff;
         private const int WmFontChange = 0x001D;
         private const int SmtoAbortIfHung = 0x0002;
+
+        public CharaEditorTheme(CharaEditorUiTheme mode = CharaEditorUiTheme.Modern)
+        {
+            this.mode = mode;
+        }
 
         [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
         private static extern int AddFontResourceEx(string lpszFilename, uint fl, IntPtr pdv);
@@ -64,10 +93,22 @@ namespace StudioCharaEditor
             Skin = UnityEngine.Object.Instantiate(baseSkin);
             Skin.hideFlags = HideFlags.HideAndDontSave;
             ownedResources.Add(Skin);
-            Font themeFont = LoadEmbeddedFont("Pangram-Light.otf");
+            Font themeFont = IsMainGame
+                ? LoadMainGameFont()
+                : LoadEmbeddedFont("Pangram-Light.otf");
             if (themeFont != null)
             {
                 Skin.font = themeFont;
+            }
+
+            // The mode-switch icon is shared by both themes.
+            MainGameExitNormalTexture = ThemeTexture("sp_ai_make_07_00.png", 128, 128, Transparent, Transparent, 0, 0);
+            MainGameExitSelectedTexture = ThemeTexture("sp_ai_make_07_01.png", 128, 128, Transparent, Transparent, 0, 0);
+
+            if (IsMainGame)
+            {
+                BuildMainGameSkin(themeFont);
+                return;
             }
 
             Texture2D windowTex = ThemeTexture("ui_window.png", 64, 64, WindowFill, Rgba(92, 103, 111, 205), 5, 1, 0.80f);
@@ -161,9 +202,11 @@ namespace StudioCharaEditor
             ColorSwatchButtonStyle.margin = new RectOffset(4, 4, 2, 2);
 
             Skin.horizontalScrollbar = ScrollBarStyle(Skin.horizontalScrollbar, scrollTrackTex, -1f, 8f);
-            Skin.verticalScrollbar = ScrollBarStyle(Skin.verticalScrollbar, scrollTrackTex, 12f, -1f);
+            // Keep the proportional thumb, but give the preview/category
+            // scroll bar a large enough hit target to grab comfortably.
+            Skin.verticalScrollbar = ScrollBarStyle(Skin.verticalScrollbar, scrollTrackTex, 18f, -1f);
             Skin.horizontalScrollbarThumb = ScrollBarStyle(Skin.horizontalScrollbarThumb, scrollThumbTex, -1f, 8f);
-            Skin.verticalScrollbarThumb = ScrollBarStyle(Skin.verticalScrollbarThumb, scrollThumbTex, 12f, 0f);
+            Skin.verticalScrollbarThumb = ScrollBarStyle(Skin.verticalScrollbarThumb, scrollThumbTex, 18f, 34f);
             Skin.verticalScrollbarThumb.stretchHeight = true;
             Skin.horizontalScrollbarLeftButton = HiddenScrollButton(Skin.horizontalScrollbarLeftButton, clearTex);
             Skin.horizontalScrollbarRightButton = HiddenScrollButton(Skin.horizontalScrollbarRightButton, clearTex);
@@ -175,6 +218,236 @@ namespace StudioCharaEditor
             GUIStyle dangerButton = ButtonStyle(Skin.button, dangerTex, dangerTex, dangerTex, Color.white);
             CloseButtonStyle = CloseStyle(Skin.button, closeTex);
             Skin.customStyles = AppendStyles(Skin.customStyles, dangerButton);
+            ApplyFont(themeFont);
+        }
+
+        private void BuildMainGameSkin(Font themeFont)
+        {
+            Texture2D clearTex = RoundedRectTexture(8, 8, Transparent, Transparent, 0, 0);
+            Texture2D panelTex = ThemeTexture("sp_ai_system_09_00.png", 252, 252, Rgba(35, 36, 38, 194), Rgba(116, 116, 112, 170), 2, 1, 0.76f);
+            // In the original uGUI the pale selection sprite is tinted green
+            // by the Image component. IMGUI does not preserve that tint, so a
+            // full-height translucent texture is generated explicitly.
+            Texture2D selectedTex = RoundedRectTexture(
+                64,
+                32,
+                Rgba(76, 151, 43, 148),
+                Rgba(130, 190, 72, 92),
+                0,
+                1);
+            MainGameSelectorSelectedTexture = RoundedRectTexture(
+                64,
+                64,
+                Rgba(82, 151, 42, 76),
+                Rgba(205, 211, 49, 255),
+                0,
+                3);
+            Texture2D sectionTex = ThemeTexture("sp_ai_system_18_00.png", 253, 40, Rgba(225, 220, 209), Rgba(87, 86, 82), 0, 0);
+            Texture2D buttonTex = ThemeTexture("sp_ai_make_23_00.png", 114, 44, Rgba(228, 222, 211), Rgba(91, 89, 84), 3, 1);
+            Texture2D buttonHoverTex = ThemeTexture("sp_ai_make_23_01.png", 114, 44, Rgba(205, 202, 48), Rgba(91, 89, 84), 3, 1);
+            Texture2D tabTex = ThemeTexture("sp_ai_make_22_00.png", 90, 37, Rgba(226, 220, 209), Rgba(75, 74, 71), 2, 1);
+            Texture2D tabHoverTex = ThemeTexture("sp_ai_make_22_01.png", 90, 37, Rgba(238, 232, 220), Rgba(75, 74, 71), 2, 1);
+            Texture2D tabSelectedTex = ThemeTexture("sp_ai_make_22_02.png", 90, 37, Rgba(210, 204, 48), Rgba(75, 74, 71), 2, 1);
+            Texture2D closeTex = ThemeTexture("sp_ai_system_02_00.png", 126, 126, Rgba(236, 232, 222), Rgba(64, 64, 62), 0, 0);
+            Texture2D closeHoverTex = ThemeTexture("sp_ai_system_02_01.png", 126, 126, Rgba(211, 204, 46), Rgba(64, 64, 62), 0, 0);
+            Texture2D fieldTex = RoundedRectTexture(48, 32, Rgba(17, 18, 19, 235), Rgba(219, 214, 204), 1, 1);
+            Texture2D fieldFocusTex = RoundedRectTexture(48, 32, Rgba(17, 18, 19, 245), Rgba(211, 204, 46), 1, 1);
+            Texture2D scrollTrackTex = RoundedRectTexture(20, 32, Rgba(225, 220, 210, 45), Rgba(225, 220, 210, 45), 1, 0);
+            Texture2D scrollThumbTex = RoundedRectTexture(20, 32, Rgba(231, 226, 216, 230), Rgba(64, 64, 62), 1, 1);
+            Texture2D sliderTrackTex = ThemeTexture("sp_ai_make_14_00.png", 163, 8, Rgba(225, 220, 210), Rgba(225, 220, 210), 0, 0);
+            MainGameSliderTrackTexture = sliderTrackTex;
+            // The original thumb sprite contains an opaque dark polygon around
+            // the pale circle. It becomes visible as black edge pixels after
+            // IMGUI scales it down, so use the same pale circle with a clean
+            // antialiased transparent edge.
+            Texture2D sliderThumbTex = CircleTexture(64, 4, Rgba(242, 239, 226));
+            Texture2D numericValueTex = RoundedRectTexture(48, 42, Rgba(3, 3, 3, 245), Rgba(3, 3, 3, 245), 0, 0);
+            MainGameDividerTexture = ThemeTexture("sp_ai_pouch_01_00.png", 512, 8, Rgba(225, 220, 210), Rgba(225, 220, 210), 0, 0);
+
+            MainGameCategoryNormal = new Texture2D[6];
+            MainGameCategorySelected = new Texture2D[6];
+            for (int i = 0; i < 6; i++)
+            {
+                MainGameCategoryNormal[i] = ThemeTexture($"sp_ai_make_{i:00}_00.png", 128, 128, Transparent, Transparent, 0, 0);
+                MainGameCategorySelected[i] = ThemeTexture($"sp_ai_make_{i:00}_01.png", 128, 128, Transparent, Transparent, 0, 0);
+            }
+
+            ToggleOffTexture = ThemeTexture("sp_ai_system_19_00.png", 124, 124, Transparent, Transparent, 0, 0);
+            ToggleOnTexture = ThemeTexture("sp_ai_system_19_01.png", 124, 124, Transparent, Transparent, 0, 0);
+            MainGameCheckboxOffTexture = ThemeTexture("sp_ai_system_20_00.png", 32, 32, Transparent, Transparent, 0, 0);
+            MainGameCheckboxOnTexture = ThemeTexture("sp_ai_system_20_01.png", 32, 32, Transparent, Transparent, 0, 0);
+            MainGamePanelWindowStyle = new GUIStyle(Skin.window);
+            SetAllBackgrounds(MainGamePanelWindowStyle, panelTex, panelTex, panelTex);
+            SetAllTextColors(MainGamePanelWindowStyle, Rgba(237, 232, 222));
+            MainGamePanelWindowStyle.border = new RectOffset(12, 12, 12, 12);
+            MainGamePanelWindowStyle.padding = new RectOffset(16, 16, 56, 14);
+            MainGamePanelWindowStyle.margin = new RectOffset(0, 0, 0, 0);
+            MainGamePanelWindowStyle.alignment = TextAnchor.UpperLeft;
+            MainGamePanelWindowStyle.fontSize = 24;
+            MainGamePanelWindowStyle.fontStyle = FontStyle.Normal;
+
+            MainGameTransparentWindowStyle = new GUIStyle(MainGamePanelWindowStyle);
+            SetAllBackgrounds(MainGameTransparentWindowStyle, clearTex, clearTex, clearTex);
+            MainGameTransparentWindowStyle.border = new RectOffset(0, 0, 0, 0);
+            MainGameTransparentWindowStyle.padding = new RectOffset(0, 0, 0, 0);
+
+            WindowStyle = MainGamePanelWindowStyle;
+            Skin.window = MainGamePanelWindowStyle;
+
+            Skin.box = PanelStyle(Skin.box, clearTex, clearTex);
+            Skin.box.border = new RectOffset(0, 0, 0, 0);
+            Skin.box.padding = new RectOffset(4, 4, 4, 4);
+            Skin.box.margin = new RectOffset(0, 0, 0, 0);
+            Skin.scrollView = new GUIStyle(Skin.box);
+
+            Skin.label = new GUIStyle(Skin.label)
+            {
+                richText = true,
+                wordWrap = false,
+                fontSize = 16,
+                normal = { textColor = Rgba(237, 232, 222) }
+            };
+            SetAllTextColors(Skin.label, Rgba(237, 232, 222));
+            Skin.label.padding = new RectOffset(2, 2, 2, 3);
+
+            LargeLabelStyle = new GUIStyle(Skin.label)
+            {
+                fontSize = 23,
+                fontStyle = FontStyle.Normal,
+                richText = true,
+                normal = { textColor = Rgba(237, 232, 222) }
+            };
+
+            Skin.button = ButtonStyle(Skin.button, buttonTex, buttonHoverTex, buttonHoverTex, Rgba(43, 43, 41));
+            Skin.button.fontSize = 16;
+            Skin.button.fixedHeight = 34f;
+            Skin.button.border = new RectOffset(12, 12, 12, 12);
+            PrimaryButtonStyle = ButtonStyle(Skin.button, buttonHoverTex, tabSelectedTex, buttonHoverTex, Rgba(43, 43, 41));
+            PrimaryButtonStyle.fontSize = 17;
+            PrimaryButtonStyle.fixedHeight = 36f;
+            CategoryButtonStyle = new GUIStyle(Skin.button);
+
+            Skin.textField = FieldStyle(Skin.textField, fieldTex, fieldFocusTex);
+            Skin.textField.fixedHeight = 32f;
+            Skin.textArea = FieldStyle(Skin.textArea, fieldTex, fieldFocusTex);
+            MainGameNumericValueStyle = new GUIStyle(Skin.textField)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                border = new RectOffset(0, 0, 0, 0),
+                padding = new RectOffset(2, 2, 0, 5),
+                margin = new RectOffset(0, 0, 0, 0),
+                fixedHeight = 42f
+            };
+            SetAllBackgrounds(MainGameNumericValueStyle, numericValueTex, numericValueTex, numericValueTex);
+            SetAllTextColors(MainGameNumericValueStyle, Rgba(237, 232, 222));
+            Skin.toggle = ToggleStyle(Skin.toggle);
+
+            TextureTextStyle = new GUIStyle(Skin.box)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                richText = true,
+                normal = { textColor = Rgba(237, 232, 222) }
+            };
+            ColorSwatchButtonStyle = new GUIStyle(Skin.button)
+            {
+                padding = new RectOffset(2, 2, 2, 2),
+                margin = new RectOffset(4, 4, 2, 2)
+            };
+
+            Skin.horizontalScrollbar = ScrollBarStyle(Skin.horizontalScrollbar, scrollTrackTex, -1f, 8f);
+            Skin.verticalScrollbar = ScrollBarStyle(Skin.verticalScrollbar, scrollTrackTex, 18f, -1f);
+            Skin.horizontalScrollbarThumb = ScrollBarStyle(Skin.horizontalScrollbarThumb, scrollThumbTex, -1f, 8f);
+            // Standard panels must use Unity's proportional thumb size. A
+            // global fixed height makes the visual thumb disagree with the
+            // scroll range, so it cannot travel to the bottom in Mesh, Adjust
+            // and the left navigation. Preview grids opt into a minimum size
+            // locally while they are being drawn.
+            Skin.verticalScrollbarThumb = ScrollBarStyle(Skin.verticalScrollbarThumb, scrollThumbTex, 18f, 0f);
+            Skin.verticalScrollbarThumb.stretchHeight = true;
+            Skin.horizontalScrollbarLeftButton = HiddenScrollButton(Skin.horizontalScrollbarLeftButton, clearTex);
+            Skin.horizontalScrollbarRightButton = HiddenScrollButton(Skin.horizontalScrollbarRightButton, clearTex);
+            Skin.verticalScrollbarUpButton = HiddenScrollButton(Skin.verticalScrollbarUpButton, clearTex);
+            Skin.verticalScrollbarDownButton = HiddenScrollButton(Skin.verticalScrollbarDownButton, clearTex);
+            Skin.horizontalSlider = SliderTrackStyle(Skin.horizontalSlider, sliderTrackTex);
+            // sp_ai_make_14_00 already contains its own transparent one-pixel
+            // edge. A 2px nine-slice border removes four of its six visible
+            // rows and leaves the 2px line seen in Studio.
+            Skin.horizontalSlider.border = new RectOffset(0, 0, 0, 0);
+            Skin.horizontalSlider.fixedHeight = 12f;
+            Skin.horizontalSliderThumb = SliderThumbStyle(Skin.horizontalSliderThumb, sliderThumbTex);
+            Skin.horizontalSliderThumb.border = new RectOffset(0, 0, 0, 0);
+            Skin.horizontalSliderThumb.fixedWidth = 22f;
+            Skin.horizontalSliderThumb.fixedHeight = 22f;
+
+            CloseButtonStyle = CloseStyle(Skin.button, closeTex);
+            CloseButtonStyle.hover.background = closeHoverTex;
+            CloseButtonStyle.active.background = closeHoverTex;
+            CloseButtonStyle.fixedWidth = 28f;
+            CloseButtonStyle.fixedHeight = 28f;
+
+            MainGameSectionHeaderStyle = new GUIStyle(Skin.label);
+            SetAllBackgrounds(MainGameSectionHeaderStyle, sectionTex, sectionTex, sectionTex);
+            SetAllTextColors(MainGameSectionHeaderStyle, Rgba(43, 43, 41));
+            MainGameSectionHeaderStyle.border = new RectOffset(14, 14, 0, 0);
+            MainGameSectionHeaderStyle.padding = new RectOffset(14, 4, 2, 3);
+            MainGameSectionHeaderStyle.margin = new RectOffset(0, 0, 0, 0);
+            MainGameSectionHeaderStyle.fixedHeight = 40f;
+            MainGameSectionHeaderStyle.fontSize = 25;
+
+            MainGameListButtonStyle = new GUIStyle(Skin.label);
+            SetAllBackgrounds(MainGameListButtonStyle, clearTex, selectedTex, selectedTex);
+            SetAllTextColors(MainGameListButtonStyle, Rgba(237, 232, 222));
+            MainGameListButtonStyle.alignment = TextAnchor.MiddleLeft;
+            MainGameListButtonStyle.padding = new RectOffset(14, 8, 2, 4);
+            MainGameListButtonStyle.margin = new RectOffset(0, 0, 0, 0);
+            MainGameListButtonStyle.border = new RectOffset(10, 10, 10, 10);
+            MainGameListButtonStyle.fixedHeight = 36f;
+            MainGameListButtonStyle.fontSize = 20;
+
+            MainGameListSelectedStyle = new GUIStyle(MainGameListButtonStyle);
+            SetAllBackgrounds(MainGameListSelectedStyle, selectedTex, selectedTex, selectedTex);
+            SetAllTextColors(MainGameListSelectedStyle, Rgba(237, 232, 222));
+            MainGameListSelectedStyle.fontStyle = FontStyle.Bold;
+
+            MainGameListMultiSelectedStyle = new GUIStyle(MainGameListSelectedStyle);
+            SetAllTextColors(MainGameListMultiSelectedStyle, Rgba(236, 221, 56));
+
+            MainGameIconButtonStyle = new GUIStyle(Skin.button);
+            SetAllBackgrounds(MainGameIconButtonStyle, clearTex, clearTex, clearTex);
+            MainGameIconButtonStyle.border = new RectOffset(0, 0, 0, 0);
+            MainGameIconButtonStyle.padding = new RectOffset(0, 0, 0, 0);
+            MainGameIconButtonStyle.margin = new RectOffset(0, 0, 0, 0);
+            MainGameIconButtonStyle.fixedHeight = 0f;
+
+            MainGameTitleStyle = new GUIStyle(Skin.label)
+            {
+                fontSize = 29,
+                alignment = TextAnchor.MiddleLeft,
+                normal = { textColor = Rgba(237, 232, 222) }
+            };
+            MainGameBreadcrumbStyle = new GUIStyle(Skin.label)
+            {
+                fontSize = 22,
+                fixedHeight = 36f,
+                alignment = TextAnchor.MiddleLeft,
+                normal = { textColor = Rgba(237, 232, 222) }
+            };
+
+            MainGameTabStyle = ButtonStyle(Skin.button, tabTex, tabHoverTex, tabHoverTex, Rgba(43, 43, 41));
+            MainGameTabStyle.fixedWidth = 90f;
+            MainGameTabStyle.fixedHeight = 37f;
+            MainGameTabStyle.fontSize = 19;
+            MainGameTabStyle.alignment = TextAnchor.MiddleCenter;
+            MainGameTabStyle.padding = new RectOffset(6, 6, 0, 4);
+            MainGameTabStyle.contentOffset = new Vector2(0f, -2f);
+            MainGameTabSelectedStyle = ButtonStyle(Skin.button, tabSelectedTex, tabSelectedTex, tabSelectedTex, Rgba(43, 43, 41));
+            MainGameTabSelectedStyle.fixedWidth = 90f;
+            MainGameTabSelectedStyle.fixedHeight = 37f;
+            MainGameTabSelectedStyle.fontSize = 19;
+            MainGameTabSelectedStyle.alignment = TextAnchor.MiddleCenter;
+            MainGameTabSelectedStyle.padding = new RectOffset(6, 6, 0, 4);
+            MainGameTabSelectedStyle.contentOffset = new Vector2(0f, -2f);
+
             ApplyFont(themeFont);
         }
 
@@ -391,6 +664,17 @@ namespace StudioCharaEditor
             ApplyFont(TextureTextStyle, font);
             ApplyFont(ColorSwatchButtonStyle, font);
             ApplyFont(CloseButtonStyle, font);
+            ApplyFont(MainGameTransparentWindowStyle, font);
+            ApplyFont(MainGamePanelWindowStyle, font);
+            ApplyFont(MainGameSectionHeaderStyle, font);
+            ApplyFont(MainGameListButtonStyle, font);
+            ApplyFont(MainGameListSelectedStyle, font);
+            ApplyFont(MainGameListMultiSelectedStyle, font);
+            ApplyFont(MainGameIconButtonStyle, font);
+            ApplyFont(MainGameTitleStyle, font);
+            ApplyFont(MainGameBreadcrumbStyle, font);
+            ApplyFont(MainGameTabStyle, font);
+            ApplyFont(MainGameTabSelectedStyle, font);
             if (Skin.customStyles != null)
             {
                 for (int i = 0; i < Skin.customStyles.Length; i++)
@@ -416,6 +700,51 @@ namespace StudioCharaEditor
                 ApplyEmbeddedOpacity(embedded, embeddedOpacity);
             }
             return embedded ?? RoundedRectTexture(width, height, fill, border, radius, borderWidth);
+        }
+
+        private Font LoadMainGameFont()
+        {
+            try
+            {
+                Font font = Font.CreateDynamicFontFromOSFont(
+                    new[] { "Yu Gothic UI", "Yu Gothic", "Meiryo UI", "Arial" },
+                    16);
+                if (font != null)
+                {
+                    font.hideFlags = HideFlags.HideAndDontSave;
+                    ownedResources.Add(font);
+                }
+                return font;
+            }
+            catch (Exception ex)
+            {
+                StudioCharaEditor.Logger?.LogWarning($"Failed to load MainGame UI font: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static void SetAllBackgrounds(GUIStyle style, Texture2D normal, Texture2D hover, Texture2D active)
+        {
+            style.normal.background = normal;
+            style.hover.background = hover;
+            style.active.background = active;
+            style.focused.background = hover;
+            style.onNormal.background = active;
+            style.onHover.background = active;
+            style.onActive.background = active;
+            style.onFocused.background = active;
+        }
+
+        private static void SetAllTextColors(GUIStyle style, Color color)
+        {
+            style.normal.textColor = color;
+            style.hover.textColor = color;
+            style.active.textColor = color;
+            style.focused.textColor = color;
+            style.onNormal.textColor = color;
+            style.onHover.textColor = color;
+            style.onActive.textColor = color;
+            style.onFocused.textColor = color;
         }
 
         private static void ApplyEmbeddedOpacity(Texture2D texture, float opacity)
@@ -585,6 +914,38 @@ namespace StudioCharaEditor
                         height - borderWidth * 2,
                         Math.Max(0, radius - borderWidth));
                     pixels[y * width + x] = insideInner ? fill : border;
+                }
+            }
+
+            texture.SetPixels(pixels);
+            texture.Apply(false, false);
+            return texture;
+        }
+
+        private Texture2D CircleTexture(int size, int padding, Color fill)
+        {
+            Texture2D texture = new Texture2D(size, size, TextureFormat.ARGB32, false);
+            texture.hideFlags = HideFlags.HideAndDontSave;
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.filterMode = FilterMode.Bilinear;
+            ownedResources.Add(texture);
+
+            float center = (size - 1f) * 0.5f;
+            float radius = Math.Max(1f, center - padding);
+            Color[] pixels = new Color[size * size];
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float dx = x - center;
+                    float dy = y - center;
+                    float distance = Mathf.Sqrt(dx * dx + dy * dy);
+                    float coverage = Mathf.Clamp01(radius + 0.5f - distance);
+                    pixels[y * size + x] = new Color(
+                        fill.r,
+                        fill.g,
+                        fill.b,
+                        fill.a * coverage);
                 }
             }
 

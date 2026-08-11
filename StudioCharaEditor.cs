@@ -11,6 +11,12 @@ using KKAPI.Studio.UI.Toolbars;
 
 namespace StudioCharaEditor
 {
+    public enum CharaEditorUiTheme
+    {
+        Modern,
+        MainGame,
+    }
+
     [BepInPlugin(GUID, Name, Version)]
     [BepInDependency(KoikatuAPI.GUID, "1.43")]
     [BepInDependency("KCOX", "7.0")]
@@ -24,7 +30,7 @@ namespace StudioCharaEditor
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "2.6.0";
+        public const string Version = "3.0.0";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -52,8 +58,34 @@ namespace StudioCharaEditor
         public static ConfigEntry<bool> ShowSelectorGridItemNames { get; private set; }
         public static ConfigEntry<float> SelectorWindowWidth { get; private set; }
         public static ConfigEntry<float> SelectorWindowHeight { get; private set; }
+        public static ConfigEntry<float> SelectorWindowX { get; private set; }
+        public static ConfigEntry<float> SelectorWindowY { get; private set; }
         public static ConfigEntry<bool> ShowTimelineIcons { get; private set; }
         public static ConfigEntry<bool> ShowMultiDetailUI { get; private set; }
+        public static ConfigEntry<CharaEditorUiTheme> UITheme { get; private set; }
+        public static ConfigEntry<int> MainGameLeftX { get; private set; }
+        public static ConfigEntry<int> MainGameLeftY { get; private set; }
+        public static ConfigEntry<int> MainGameRightX { get; private set; }
+        public static ConfigEntry<int> MainGameRightY { get; private set; }
+        public static ConfigEntry<int> MainGameLeftPanelWidth { get; private set; }
+        public static ConfigEntry<int> MainGameLeftPanelHeight { get; private set; }
+        public static ConfigEntry<int> MainGameRightPanelWidth { get; private set; }
+        public static ConfigEntry<int> MainGameRightPanelHeight { get; private set; }
+        public static ConfigEntry<int> MainGameStatusPanelWidth { get; private set; }
+        public static ConfigEntry<int> MainGameStatusPanelHeight { get; private set; }
+        public static ConfigEntry<int> MainGamePluginPanelWidth { get; private set; }
+        public static ConfigEntry<int> MainGamePluginPanelHeight { get; private set; }
+        public static ConfigEntry<int> MainGameStatusX { get; private set; }
+        public static ConfigEntry<int> MainGameStatusY { get; private set; }
+        public static ConfigEntry<int> MainGamePluginX { get; private set; }
+        public static ConfigEntry<int> MainGamePluginY { get; private set; }
+        public static ConfigEntry<bool> MainGameStatusCollapsed { get; private set; }
+        public static ConfigEntry<bool> MainGamePluginCollapsed { get; private set; }
+        public static ConfigEntry<int> MainGameStatusCollapsedX { get; private set; }
+        public static ConfigEntry<int> MainGameStatusCollapsedY { get; private set; }
+        public static ConfigEntry<int> MainGamePluginCollapsedX { get; private set; }
+        public static ConfigEntry<int> MainGamePluginCollapsedY { get; private set; }
+        public static ConfigEntry<float> MainGameUIScale { get; private set; }
 
         internal SimpleToolbarToggle _toolbarCharEditor;
         private Harmony harmony;
@@ -98,9 +130,43 @@ namespace StudioCharaEditor
             ShowSelectorGridItemNames = Config.Bind("GUI", "Show item names in grid view", true, "Show the item name under each thumbnail in the selector grid view.");
             SelectorWindowWidth = Config.Bind("GUI", "Selector window width", 540f, "Remembered width of the item selector window.");
             SelectorWindowHeight = Config.Bind("GUI", "Selector window height", 520f, "Remembered height of the item selector window.");
+            SelectorWindowX = Config.Bind("GUI", "Selector window X", -1f, "Remembered X position of the item selector window. -1 places it next to the editor window.");
+            SelectorWindowY = Config.Bind("GUI", "Selector window Y", -1f, "Remembered Y position of the item selector window. -1 places it next to the editor window.");
             ShowTimelineIcons = Config.Bind("GUI", "Show timeline icons", true, "Show the 'T' Timeline interpolation buttons next to character values when the Timeline plugin is installed.");
             ShowMultiDetailUI = Config.Bind("GUI", "Show multidetail plugin UI", true, "When the MultiDetail plugin is installed, replace the Body > Skin and Face > FaceType detail sliders with the multi-slot MultiDetail UI. Turn off to use the vanilla single-detail UI instead.");
+            UITheme = Config.Bind("GUI", "UI theme", CharaEditorUiTheme.MainGame,
+                "Modern keeps the existing single-window UI. MainGame uses the Honey Select 2 character creator layout with separate navigation and detail panels.");
+            MainGameLeftX = Config.Bind("GUI.MainGame", "Left panel X", 8, "Remembered X position of the MainGame navigation panel.");
+            MainGameLeftY = Config.Bind("GUI.MainGame", "Left panel Y", 190, "Remembered Y position of the MainGame navigation panel.");
+            MainGameRightX = Config.Bind("GUI.MainGame", "Right panel X", -1, "Remembered X position of the MainGame detail panel. -1 places it at the right screen edge.");
+            MainGameRightY = Config.Bind("GUI.MainGame", "Right panel Y", 10, "Remembered Y position of the MainGame detail panel.");
+            MainGameLeftPanelWidth = Config.Bind("GUI.MainGame", "Left panel width", 320, "Remembered width of the MainGame navigation panel.");
+            MainGameLeftPanelHeight = Config.Bind("GUI.MainGame", "Left panel height", 730, "Remembered height of the MainGame navigation panel.");
+            MainGameRightPanelWidth = Config.Bind("GUI.MainGame", "Right panel width", 468, "Remembered width of the MainGame detail panel.");
+            MainGameRightPanelHeight = Config.Bind("GUI.MainGame", "Right panel height", 540, "Remembered height of the MainGame detail panel.");
+            MainGameStatusPanelWidth = Config.Bind("GUI.MainGame", "Status panel width", 350, "Remembered width of the MainGame Status panel.");
+            MainGameStatusPanelHeight = Config.Bind("GUI.MainGame", "Status panel height", 200, "Remembered height of the MainGame Status panel.");
+            MainGamePluginPanelWidth = Config.Bind("GUI.MainGame", "Plugin panel width", 350, "Remembered width of the MainGame Plugin settings panel.");
+            MainGamePluginPanelHeight = Config.Bind("GUI.MainGame", "Plugin panel height", 210, "Remembered height of the MainGame Plugin settings panel.");
+            MainGameStatusX = Config.Bind("GUI.MainGame", "Status panel X", -1, "Remembered X position of the MainGame Status panel.");
+            MainGameStatusY = Config.Bind("GUI.MainGame", "Status panel Y", -1, "Remembered Y position of the MainGame Status panel.");
+            MainGamePluginX = Config.Bind("GUI.MainGame", "Plugin panel X", -1, "Remembered X position of the MainGame Plugin settings panel.");
+            MainGamePluginY = Config.Bind("GUI.MainGame", "Plugin panel Y", -1, "Remembered Y position of the MainGame Plugin settings panel.");
+            MainGameStatusCollapsed = Config.Bind("GUI.MainGame", "Status panel collapsed", false, "Remember whether the MainGame Status panel is collapsed.");
+            MainGamePluginCollapsed = Config.Bind("GUI.MainGame", "Plugin panel collapsed", false, "Remember whether the MainGame Plugin settings panel is collapsed.");
+            MainGameStatusCollapsedX = Config.Bind("GUI.MainGame", "Collapsed Status X", -1, "Remembered X position of the collapsed Status button.");
+            MainGameStatusCollapsedY = Config.Bind("GUI.MainGame", "Collapsed Status Y", -1, "Remembered Y position of the collapsed Status button.");
+            MainGamePluginCollapsedX = Config.Bind("GUI.MainGame", "Collapsed Plugin X", -1, "Remembered X position of the collapsed Plugin settings button.");
+            MainGamePluginCollapsedY = Config.Bind("GUI.MainGame", "Collapsed Plugin Y", -1, "Remembered Y position of the collapsed Plugin settings button.");
+            MainGameUIScale = Config.Bind(
+                "GUI.MainGame",
+                "UI Scale",
+                1f,
+                new ConfigDescription(
+                    "Scale of the Main Game UI theme.",
+                    new AcceptableValueRange<float>(0.75f, 1.6f)));
             ShowMultiDetailUI.SettingChanged += OnShowMultiDetailUISettingChanged;
+            UITheme.SettingChanged += OnUiThemeSettingChanged;
 
             /*
             configGreeting = Config.Bind("General",   // The section under which the option is shown
@@ -139,10 +205,19 @@ namespace StudioCharaEditor
 
         private void OnDestroy()
         {
+            CharaEditorUI activeUi = UnityEngine.Object.FindObjectOfType<CharaEditorUI>();
+            activeUi?.PersistSelectorWindowSize();
+            activeUi?.PersistMainGamePanelPositions();
+            SaveConfigNow();
+
             if (ShowMultiDetailUI != null)
             {
                 ShowMultiDetailUI.SettingChanged -=
                     OnShowMultiDetailUISettingChanged;
+            }
+            if (UITheme != null)
+            {
+                UITheme.SettingChanged -= OnUiThemeSettingChanged;
             }
 
             if (editorRoot != null)
@@ -222,6 +297,14 @@ namespace StudioCharaEditor
             CharaEditorMgr.Instance?.RefreshAllControllerFileData();
         }
 
+        private static void OnUiThemeSettingChanged(object sender, EventArgs eventArgs)
+        {
+            // Dev reload can tear the plugin down before BepInEx performs its
+            // normal config flush, so persist the user's last selected mode at
+            // the moment it changes.
+            SaveConfigNow();
+        }
+
         internal static void SaveConfigNow()
         {
             try
@@ -242,12 +325,17 @@ namespace StudioCharaEditor
             var ui = UnityEngine.Object.FindObjectOfType<CharaEditorUI>();
             if (ui != null)
             {
+                if (show)
+                {
+                    ui.PrepareToShow();
+                }
                 ui.VisibleGUI = show;
                 if (show)
                 {
                     CharaEditorMgr.Instance?.ReloadDictionary();
                     ui.windowRect = new Rect(UIXPosition.Value, UIYPosition.Value,
                         Math.Max(600, UIWidth.Value), Math.Max(400, UIHeight.Value));
+                    ui.EnsureMainGamePanelRects();
                 }
                 else
                 {
@@ -256,6 +344,7 @@ namespace StudioCharaEditor
                     UIWidth.Value = (int)ui.windowRect.width;
                     UIHeight.Value = (int)ui.windowRect.height;
                     ui.PersistSelectorWindowSize();
+                    ui.PersistMainGamePanelPositions();
                 }
             }
         }
