@@ -171,6 +171,13 @@ namespace StudioCharaEditor
         public Dictionary<string, List<string>> myCategorySet;
         public Dictionary<string, CharaDetailInfo> myDetailDict;
         public Dictionary<string, List<CharaDetailInfo>> myDetailSet;
+        private readonly Dictionary<string, string[]> categoryListCache =
+            new Dictionary<string, string[]>();
+        private readonly Dictionary<string, CharaDetailInfo[]> detailInfoListCache =
+            new Dictionary<string, CharaDetailInfo[]>();
+        private static readonly string[] EmptyCategoryList = new string[0];
+        private static readonly CharaDetailInfo[] EmptyDetailInfoList =
+            new CharaDetailInfo[0];
         public List<AccessoryInfo> myAccessoriesInfo;
         public List<string> myUpdateSequence;
         public bool hairSameColor;
@@ -334,6 +341,7 @@ namespace StudioCharaEditor
         {
             ChaControl chaCtrl = ociTarget.charInfo;
             PluginPandarinkaToolkit.PrepareMaleCategories();
+            InvalidateListCaches();
             myCategorySet = new Dictionary<string, List<string>>();
             myDetailDict = new Dictionary<string, CharaDetailInfo>();
             myDetailSet = new Dictionary<string, List<CharaDetailInfo>>();
@@ -555,6 +563,7 @@ namespace StudioCharaEditor
             // DONE
             InitTexture(true);
             PluginPandarinkaToolkit.ConfigureController(this);
+            InvalidateListCaches();
         }
 
         /// <summary>
@@ -618,6 +627,7 @@ namespace StudioCharaEditor
             ChaControl chaCtrl = ociTarget.charInfo;
             // rebuild list
             myCategorySet[CT1_ACCS] = BuildAccessoriesList();
+            InvalidateCategoryListCache(CT1_ACCS);
             // rebuild details
             foreach (var accInfo in myAccessoriesInfo)
             {
@@ -657,6 +667,7 @@ namespace StudioCharaEditor
                     myDetailSet[setName].Add(cdi);
                     myDetailDict[cdi.DetailDefine.Key] = cdi;
                 }
+                InvalidateDetailInfoListCache(setName);
             }
         }
 
@@ -765,29 +776,69 @@ namespace StudioCharaEditor
 
         public string[] GetCategoryList(string category1)
         {
-            if (myCategorySet.ContainsKey(category1))
+            if (category1 != null &&
+                categoryListCache.TryGetValue(category1, out string[] cached))
             {
-                return myCategorySet[category1].ToArray();
+                return cached;
             }
 
-            return new string[] { };
+            if (category1 != null &&
+                myCategorySet.TryGetValue(category1, out List<string> categories))
+            {
+                string[] result = categories.ToArray();
+                categoryListCache[category1] = result;
+                return result;
+            }
+
+            return EmptyCategoryList;
         }
 
         public CharaDetailInfo[] GetDetailInfoList(string category1, string category2)
         {
+            string setName = category1 + "#" + category2;
+            if (detailInfoListCache.TryGetValue(
+                    setName,
+                    out CharaDetailInfo[] cached))
+            {
+                return cached;
+            }
+
             if (myCategorySet.ContainsKey(category1))
             {
                 if (myCategorySet[category1].Contains(category2))
                 {
                     // pre-setted detail info
-                    string setName = category1 + "#" + category2;
                     if (myDetailSet.ContainsKey(setName))
                     {
-                        return myDetailSet[setName].ToArray();
+                        CharaDetailInfo[] result = myDetailSet[setName].ToArray();
+                        detailInfoListCache[setName] = result;
+                        return result;
                     }
                 }
             }
-            return new CharaDetailInfo[] { };
+            return EmptyDetailInfoList;
+        }
+
+        private void InvalidateListCaches()
+        {
+            categoryListCache.Clear();
+            detailInfoListCache.Clear();
+        }
+
+        private void InvalidateCategoryListCache(string category1)
+        {
+            if (category1 != null)
+            {
+                categoryListCache.Remove(category1);
+            }
+        }
+
+        private void InvalidateDetailInfoListCache(string setName)
+        {
+            if (setName != null)
+            {
+                detailInfoListCache.Remove(setName);
+            }
         }
 
         public CharaDetailInfo GetDetailInfo(string category1, string category2, string category3)
@@ -808,6 +859,11 @@ namespace StudioCharaEditor
             // when cloth type changed, 
             if (myCategorySet.ContainsKey(CT1_CTHS) && myCategorySet[CT1_CTHS].Contains(category2))
             {
+                // Clothing Lab expands the male editor with female clothing
+                // categories and replaces the Type selector provider. This
+                // method rebuilds that selector after every clothing change,
+                // so the integration has to be applied again afterwards.
+                PluginPandarinkaToolkit.PrepareMaleCategories();
                 string setName = CT1_CTHS + "#" + category2;
                 Dictionary<string, object> revData = new Dictionary<string, object>();
                 // delete old entry form myDetailDict
@@ -831,6 +887,8 @@ namespace StudioCharaEditor
                     myDetailSet[setName].Add(cdi);
                     myDetailDict[cdd.Key] = cdi;
                 }
+                PluginPandarinkaToolkit.ConfigureController(this);
+                InvalidateListCaches();
             }
         }
 
@@ -953,6 +1011,7 @@ namespace StudioCharaEditor
                     myDetailSet[setName].Add(cdi);
                     myDetailDict[cdd.Key] = cdi;
                 }
+                InvalidateDetailInfoListCache(setName);
             }
         }
 

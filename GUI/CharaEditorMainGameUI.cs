@@ -2,20 +2,61 @@ using AIChara;
 using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using CharaCustom;
+using ExtensibleSaveFormat;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Studio;
 using UnityEngine;
 
 namespace StudioCharaEditor
 {
     partial class CharaEditorUI
     {
+        private delegate void MainGameDoTextFieldDelegate(
+            Rect position,
+            int controlId,
+            GUIContent content,
+            bool multiline,
+            int maxLength,
+            GUIStyle style);
+
+        private static readonly MainGameDoTextFieldDelegate MainGameDoTextField =
+            CreateMainGameDoTextFieldDelegate();
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct MainGameShellFileOperation
+        {
+            public IntPtr WindowHandle;
+            public uint Function;
+            [MarshalAs(UnmanagedType.LPWStr)] public string Source;
+            [MarshalAs(UnmanagedType.LPWStr)] public string Destination;
+            public ushort Flags;
+            [MarshalAs(UnmanagedType.Bool)] public bool AnyOperationsAborted;
+            public IntPtr NameMappings;
+            [MarshalAs(UnmanagedType.LPWStr)] public string ProgressTitle;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SHFileOperation(
+            ref MainGameShellFileOperation operation);
+
+        private const uint MainGameShellDelete = 3;
+        private const ushort MainGameShellSilent = 0x0004;
+        private const ushort MainGameShellNoConfirmation = 0x0010;
+        private const ushort MainGameShellAllowUndo = 0x0040;
+        private const ushort MainGameShellNoErrorUi = 0x0400;
+        private const string MainGameMaterialEditorExtendedDataId =
+            "com.deathweasel.bepinex.materialeditor";
+
         private enum MainGameUtilityPage
         {
             None,
@@ -37,6 +78,9 @@ namespace StudioCharaEditor
         private const int MainGamePluginWindowId = 10128;
         private const int MainGameCollapsedStatusWindowId = 10129;
         private const int MainGameCollapsedPluginWindowId = 10130;
+        private const int MainGameCoordinateOverwriteWindowId = 10131;
+        private const int MainGameSelectorContextMenuWindowId = 10132;
+        private const int MainGameCoordinateContextMenuWindowId = 10133;
         private const float MainGameLargePreviewScrollbarMinimumThumbHeight = 42f;
         private const float MainGameMinimumLeftWidth = 260f;
         private const float MainGameMinimumLeftHeight = 300f;
@@ -53,6 +97,27 @@ namespace StudioCharaEditor
         private static readonly int[] MainGameIconCategoryMap = { 1, 0, 2, 3, 4, -1 };
         private static readonly string[] MainGameBodyScaleAxisNames =
             { "Body Scale X", "Body Scale Y", "Body Scale Z" };
+        private static readonly int[] EmptyStatusKeys = new int[0];
+        private static readonly string[] MainGameClothesTabs =
+            { "Type", "Color 01", "Color 02", "Color 03", "Other" };
+        private static readonly string[] MainGameAccessoryTabs =
+            { "Type", "Accessory Color", "Hair Color", "Base Position", "Settings" };
+        private static readonly string[] MainGameSkinTabs =
+            { "Skin", "Build", "Color" };
+        private static readonly string[] MainGameTypeColorTabs =
+            { "Type", "Color" };
+        private static readonly string[] MainGameColorTabs = { "Color" };
+        private static readonly string[] MainGameTypeColorPlacementTabs =
+            { "Type", "Color", "Placement" };
+        private static readonly string[] MainGameFaceTypeTabs =
+            { "Contour", "Skin", "Wrinkles" };
+        private static readonly string[] MainGameEyeTabs =
+            { "Iris Type", "Iris Settings", "Pupil Type", "Pupil Settings", "Eye Whites" };
+        private static readonly string[] MainGameSettingsTabs = { "Settings" };
+        private static readonly string[] MainGameEyeHighlightTabs =
+            { "Type", "Color", "Settings" };
+        private static readonly Dictionary<string, Type> MainGameLoadedTypeCache =
+            new Dictionary<string, Type>(StringComparer.Ordinal);
 
         private CharaEditorUiTheme activeThemeMode = CharaEditorUiTheme.Modern;
         private Rect mainGameLeftRect;
@@ -68,7 +133,6 @@ namespace StudioCharaEditor
         private bool mainGamePanelRectsInitialized;
         private bool mainGameSettingsOpen;
         private int mainGameSettingsPage;
-        private bool mainGameUseMouseWheel = true;
         private string mainGameUiScalePercentText = string.Empty;
         private bool mainGameCoordinateRulesVisible;
         private int mainGameMakerPoseIndex = 1;
@@ -115,6 +179,26 @@ namespace StudioCharaEditor
         private GUIStyle mainGameAuxiliaryHeaderButtonStyle;
         private GUIStyle mainGameCollapsedWindowStyle;
         private GUIStyle mainGameCollapsedTitleStyle;
+        private CharaEditorTheme mainGameLayoutStyleTheme;
+        private GUIStyle mainGameLeftWindowStyle;
+        private GUIStyle mainGameHairLeftWindowStyle;
+        private GUIStyle mainGameRightWindowStyle;
+        private GUIStyle mainGameAuxiliaryWindowStyle;
+        private GUIStyle mainGameWindowTitle20Style;
+        private GUIStyle mainGameWindowTitle24Style;
+        private GUIStyle mainGameCompactToggleLabelStyle;
+        private GUIStyle mainGameRadio16Style;
+        private GUIStyle mainGameRadio20Style;
+        private GUIStyle mainGameScrollToSelectionButtonStyle;
+        private GUIStyle mainGameDetailTabNormalStyle;
+        private GUIStyle mainGameDetailTabSelectedStyle;
+        private float mainGameDetailTabStyleWidth = -1f;
+        private int mainGameDetailTabStyleFontSize = -1;
+        private readonly Dictionary<GUIStyle, GUIStyle> mainGameFittedLabelStyles =
+            new Dictionary<GUIStyle, GUIStyle>();
+        private readonly GUIContent mainGameScratchContent = new GUIContent();
+        private readonly GUIContent mainGameMaterialEditorShortcutContent =
+            new GUIContent();
         private ConfigEntry<bool> mainGameXyzScaleEntry;
         private CharaEditorTheme mainGameSelectorStyleTheme;
         private GUIStyle mainGameSelectorItemLabelStyle;
@@ -124,6 +208,50 @@ namespace StudioCharaEditor
         private readonly Dictionary<string, int> mainGameDetailTabPool = new Dictionary<string, int>();
         private readonly Dictionary<string, string> mainGameStatusValueInputs =
             new Dictionary<string, string>();
+        private readonly Dictionary<string, string> mainGameNumericValueInputs =
+            new Dictionary<string, string>();
+        private readonly Dictionary<string, GUIContent> mainGameNumericFieldContents =
+            new Dictionary<string, GUIContent>();
+        private readonly Dictionary<string, int> mainGameNumericControlIds =
+            new Dictionary<string, int>();
+        private readonly HashSet<int> mainGameUsedNumericControlIds =
+            new HashSet<int>();
+        private string mainGameActiveNumericControlName = string.Empty;
+        private int mainGameActiveNumericControlId;
+        private int mainGameContextFrame = -1;
+        private OCIChar mainGameContextTarget;
+        private int mainGameContextCategory1Index = -1;
+        private int mainGameContextCategory2Index = -1;
+        private bool mainGameContextValid;
+        private CharaEditorController mainGameContextController;
+        private string mainGameContextCategory1;
+        private string mainGameContextCategory2;
+        private string mainGameContextDetailSetKey;
+        private readonly Dictionary<ChaListDefine.CategoryNo, int[]> mainGameStatusKeysCache =
+            new Dictionary<ChaListDefine.CategoryNo, int[]>();
+        private readonly Dictionary<string, MainGameTabsCacheEntry> mainGameTabsCache =
+            new Dictionary<string, MainGameTabsCacheEntry>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> mainGameDetailNameCache =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+        private string mainGameDetailNameCacheLanguage = string.Empty;
+        private object mainGameDetailNameLocalizationDictionary;
+        private SelectorSidePanel mainGameInlineSelectorPanel;
+        private string mainGameInlineSelectorKey = string.Empty;
+        private bool mainGameInlineSelectorFoldersOpen;
+        private GUIStyle mainGameSelectorHeaderButtonStyle;
+        private GUIStyle mainGameSelectorHeaderSelectedButtonStyle;
+        private GUIStyle mainGameSelectorSearchFieldStyle;
+        private GUIStyle mainGameSelectorSearchPlaceholderStyle;
+        private bool mainGameCoordinateOverwritePromptOpen;
+        private Rect mainGameCoordinateOverwriteRect = new Rect(0f, 0f, 390f, 210f);
+        private MainGameCoordinateCard mainGameCoordinateOverwriteCard;
+        private bool mainGameCoordinateContextMenuOpen;
+        private bool mainGameCoordinateRenameMode;
+        private Rect mainGameCoordinateContextMenuRect = new Rect(0f, 0f, 210f, 76f);
+        private MainGameCoordinateCard mainGameCoordinateContextCard;
+        private string mainGameCoordinateRenameInput = string.Empty;
+        private Vector2 mainGameCoordinateContextScreenPosition;
+        private bool mainGameCoordinateContextPositionPending;
 
         private sealed class MainGameCoordinateCard
         {
@@ -132,6 +260,13 @@ namespace StudioCharaEditor
             public DateTime Modified;
             public Texture2D Preview;
             public bool PreviewLoadAttempted;
+        }
+
+        private sealed class MainGameTabsCacheEntry
+        {
+            public CharaDetailInfo[] DetailSet;
+            public int DynamicSignature;
+            public string[] Tabs;
         }
 
         private sealed class MainGameCoordinateFolderNode
@@ -206,6 +341,15 @@ namespace StudioCharaEditor
             {
                 float scale = GetActiveGuiScale();
                 return new Rect(24f, Screen.height / scale - 74f, 54f, 54f);
+            }
+        }
+
+        private Rect MainGameMaterialEditorShortcutRect
+        {
+            get
+            {
+                Rect exitRect = MainGameExitRect;
+                return new Rect(exitRect.x + 60f, exitRect.y, exitRect.width, exitRect.height);
             }
         }
 
@@ -359,6 +503,28 @@ namespace StudioCharaEditor
             mainGameCollapsedStatusRect.y = Mathf.Clamp(mainGameCollapsedStatusRect.y, 4f, Math.Max(4f, logicalHeight - mainGameCollapsedStatusRect.height - 4f));
             mainGameCollapsedPluginRect.x = Mathf.Clamp(mainGameCollapsedPluginRect.x, 4f, Math.Max(4f, logicalWidth - mainGameCollapsedPluginRect.width - 4f));
             mainGameCollapsedPluginRect.y = Mathf.Clamp(mainGameCollapsedPluginRect.y, 4f, Math.Max(4f, logicalHeight - mainGameCollapsedPluginRect.height - 4f));
+            if (mainGameCoordinateOverwritePromptOpen)
+            {
+                mainGameCoordinateOverwriteRect.x = Mathf.Clamp(
+                    mainGameCoordinateOverwriteRect.x,
+                    4f,
+                    Math.Max(4f, logicalWidth - mainGameCoordinateOverwriteRect.width - 4f));
+                mainGameCoordinateOverwriteRect.y = Mathf.Clamp(
+                    mainGameCoordinateOverwriteRect.y,
+                    4f,
+                    Math.Max(4f, logicalHeight - mainGameCoordinateOverwriteRect.height - 4f));
+            }
+            if (mainGameCoordinateContextMenuOpen)
+            {
+                mainGameCoordinateContextMenuRect.x = Mathf.Clamp(
+                    mainGameCoordinateContextMenuRect.x,
+                    4f,
+                    Math.Max(4f, logicalWidth - mainGameCoordinateContextMenuRect.width - 4f));
+                mainGameCoordinateContextMenuRect.y = Mathf.Clamp(
+                    mainGameCoordinateContextMenuRect.y,
+                    4f,
+                    Math.Max(4f, logicalHeight - mainGameCoordinateContextMenuRect.height - 4f));
+            }
         }
 
         private Rect GetSelectorAnchorRect()
@@ -366,48 +532,42 @@ namespace StudioCharaEditor
             return UseMainGameLayout ? mainGameRightRect : windowRect;
         }
 
-        private Rect[] GetEditorMouseRects()
+        private bool IsMouseInsideEditorWindow(Vector2 mousePosition)
         {
-            return UseMainGameLayout
-                ? new[]
-                {
-                    MainGameHeaderRect,
-                    mainGameLeftRect,
-                    mainGameRightRect,
-                    mainGameStatusCollapsed ? mainGameCollapsedStatusRect : mainGameStatusRect,
-                    mainGamePluginCollapsed ? mainGameCollapsedPluginRect : mainGamePluginRect,
-                    MainGameExitRect
-                }
-                : new[] { windowRect };
+            if (UseMainGameLayout)
+            {
+                return MainGameHeaderRect.Contains(mousePosition) ||
+                       mainGameLeftRect.Contains(mousePosition) ||
+                       mainGameRightRect.Contains(mousePosition) ||
+                       (mainGameStatusCollapsed
+                           ? mainGameCollapsedStatusRect
+                           : mainGameStatusRect).Contains(mousePosition) ||
+                       (mainGamePluginCollapsed
+                           ? mainGameCollapsedPluginRect
+                           : mainGamePluginRect).Contains(mousePosition) ||
+                       MainGameExitRect.Contains(mousePosition) ||
+                       MainGameMaterialEditorShortcutRect.Contains(mousePosition) ||
+                       (mainGameCoordinateOverwritePromptOpen &&
+                        mainGameCoordinateOverwriteRect.Contains(mousePosition)) ||
+                       (mainGameCoordinateContextMenuOpen &&
+                        mainGameCoordinateContextMenuRect.Contains(mousePosition)) ||
+                       (selectorContextMenu != null &&
+                        selectorContextMenu.Rect.width > 0f &&
+                        selectorContextMenu.Rect.height > 0f &&
+                        selectorContextMenu.Rect.Contains(mousePosition));
+            }
+            return windowRect.Contains(mousePosition);
         }
 
         private void DrawMainGameLayout()
         {
+            EnsureMainGameLayoutStyleCache();
             DrawMainGameNavigationHeader();
-            GUIStyle leftWindowStyle = theme.MainGamePanelWindowStyle;
-            if (!mainGameSettingsOpen &&
-                CharaEditorController.CATEGORY1[catelogIndex1] == CharaEditorController.CT1_HAIR)
-            {
-                leftWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle);
-                leftWindowStyle.padding = new RectOffset(
-                    leftWindowStyle.padding.left,
-                    leftWindowStyle.padding.right,
-                    14,
-                    leftWindowStyle.padding.bottom);
-            }
-            else
-            {
-                // Body Shape, Face Settings, Outfit, Slot and Character
-                // Setting all start with the panel title already drawn at the
-                // top of the window. Keep only a small gap before their first
-                // entry; later group spacing remains unchanged.
-                leftWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle);
-                leftWindowStyle.padding = new RectOffset(
-                    leftWindowStyle.padding.left,
-                    leftWindowStyle.padding.right,
-                    48,
-                    leftWindowStyle.padding.bottom);
-            }
+            GUIStyle leftWindowStyle = !mainGameSettingsOpen &&
+                                       CharaEditorController.CATEGORY1[catelogIndex1] ==
+                                       CharaEditorController.CT1_HAIR
+                ? mainGameHairLeftWindowStyle
+                : mainGameLeftWindowStyle;
             Rect returnedLeftRect = GUI.Window(
                 MainGameLeftWindowId,
                 mainGameLeftRect,
@@ -437,18 +597,12 @@ namespace StudioCharaEditor
             }
             mainGameCurrentRightTitle = detailTitle;
 
-            GUIStyle rightWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle);
-            rightWindowStyle.padding = new RectOffset(
-                rightWindowStyle.padding.left,
-                rightWindowStyle.padding.right,
-                68,
-                8);
             Rect returnedRightRect = GUI.Window(
                 MainGameRightWindowId,
                 mainGameRightRect,
                 DrawMainGameRightWindow,
                 string.Empty,
-                rightWindowStyle);
+                mainGameRightWindowStyle);
             returnedRightRect.size = mainGameRightRect.size;
             if (mainGameResizeWindowId == MainGameRightWindowId)
             {
@@ -456,9 +610,6 @@ namespace StudioCharaEditor
             }
             mainGameRightRect = returnedRightRect;
             ClampMainGamePanelRects();
-            GUIStyle auxiliaryWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle);
-            auxiliaryWindowStyle.padding = new RectOffset(10, 10, 48, 10);
-            auxiliaryWindowStyle.fontSize = 20;
             if (mainGameStatusCollapsed)
             {
                 mainGameCollapsedStatusRect = GUI.Window(
@@ -475,7 +626,7 @@ namespace StudioCharaEditor
                     mainGameStatusRect,
                     DrawMainGameStatusWindow,
                     string.Empty,
-                    auxiliaryWindowStyle);
+                    mainGameAuxiliaryWindowStyle);
                 returnedStatusRect.size = mainGameStatusRect.size;
                 mainGameStatusRect = returnedStatusRect;
             }
@@ -495,19 +646,79 @@ namespace StudioCharaEditor
                     mainGamePluginRect,
                     DrawMainGamePluginWindow,
                     string.Empty,
-                    auxiliaryWindowStyle);
+                    mainGameAuxiliaryWindowStyle);
                 returnedPluginRect.size = mainGamePluginRect.size;
                 mainGamePluginRect = returnedPluginRect;
             }
+            if (mainGameCoordinateOverwritePromptOpen)
+            {
+                mainGameCoordinateOverwriteRect = GUI.Window(
+                    MainGameCoordinateOverwriteWindowId,
+                    mainGameCoordinateOverwriteRect,
+                    DrawMainGameCoordinateOverwriteWindow,
+                    string.Empty,
+                    mainGameAuxiliaryWindowStyle);
+            }
+            DrawMainGameCoordinateContextMenuOverlay();
+            DrawMainGameSelectorContextMenuOverlay();
             ClampMainGamePanelRects();
             if (Event.current.rawType == EventType.MouseUp)
             {
                 PersistMainGamePanelPositions();
             }
-            DrawMainGameModeExitButton();
+            DrawMainGameModeShortcutButtons();
         }
 
-        private void DrawMainGameModeExitButton()
+        private void EnsureMainGameLayoutStyleCache()
+        {
+            if (mainGameLayoutStyleTheme == theme &&
+                mainGameLeftWindowStyle != null &&
+                mainGameHairLeftWindowStyle != null &&
+                mainGameRightWindowStyle != null &&
+                mainGameAuxiliaryWindowStyle != null)
+            {
+                return;
+            }
+
+            mainGameLayoutStyleTheme = theme;
+            mainGameLeftWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle);
+            mainGameLeftWindowStyle.padding = new RectOffset(
+                mainGameLeftWindowStyle.padding.left,
+                mainGameLeftWindowStyle.padding.right,
+                48,
+                mainGameLeftWindowStyle.padding.bottom);
+            mainGameHairLeftWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle);
+            mainGameHairLeftWindowStyle.padding = new RectOffset(
+                mainGameHairLeftWindowStyle.padding.left,
+                mainGameHairLeftWindowStyle.padding.right,
+                14,
+                mainGameHairLeftWindowStyle.padding.bottom);
+            mainGameRightWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle);
+            mainGameRightWindowStyle.padding = new RectOffset(
+                mainGameRightWindowStyle.padding.left,
+                mainGameRightWindowStyle.padding.right,
+                68,
+                8);
+            mainGameAuxiliaryWindowStyle = new GUIStyle(theme.MainGamePanelWindowStyle)
+            {
+                padding = new RectOffset(10, 10, 48, 10),
+                fontSize = 20
+            };
+
+            mainGameWindowTitle20Style = null;
+            mainGameWindowTitle24Style = null;
+            mainGameCompactToggleLabelStyle = null;
+            mainGameRadio16Style = null;
+            mainGameRadio20Style = null;
+            mainGameScrollToSelectionButtonStyle = null;
+            mainGameDetailTabNormalStyle = null;
+            mainGameDetailTabSelectedStyle = null;
+            mainGameDetailTabStyleWidth = -1f;
+            mainGameDetailTabStyleFontSize = -1;
+            mainGameFittedLabelStyles.Clear();
+        }
+
+        private void DrawMainGameModeShortcutButtons()
         {
             Rect buttonRect = MainGameExitRect;
             bool hover = buttonRect.Contains(Event.current.mousePosition);
@@ -520,6 +731,170 @@ namespace StudioCharaEditor
                 PersistMainGamePanelPositions();
                 StudioCharaEditor.UITheme.Value = CharaEditorUiTheme.Modern;
                 StudioCharaEditor.SaveConfigNow();
+            }
+
+            Rect materialEditorRect = MainGameMaterialEditorShortcutRect;
+            bool materialHover = materialEditorRect.Contains(Event.current.mousePosition);
+            Texture2D materialTexture = theme.MainGameMaterialEditorShortcutTexture;
+            if (materialTexture != null)
+            {
+                GUI.DrawTexture(
+                    materialEditorRect,
+                    materialTexture,
+                    ScaleMode.ScaleToFit,
+                    true);
+            }
+            if (materialHover && Event.current.type == EventType.Repaint)
+            {
+                DrawMainGameSelectorOutline(
+                    materialEditorRect,
+                    new Color32(112, 205, 67, 255),
+                    2f);
+            }
+            if (GUI.Button(
+                    materialEditorRect,
+                    GetMainGameMaterialEditorShortcutContent(),
+                    theme.MainGameIconButtonStyle))
+            {
+                OpenMainGameMaterialEditor(
+                    ociTarget?.charInfo,
+                    "Character",
+                    0,
+                    string.Empty);
+            }
+        }
+
+        private GUIContent GetMainGameMaterialEditorShortcutContent()
+        {
+            mainGameMaterialEditorShortcutContent.text = string.Empty;
+            mainGameMaterialEditorShortcutContent.tooltip = LC("Material Editor");
+            return mainGameMaterialEditorShortcutContent;
+        }
+
+        private void DrawMainGameSelectorContextMenuOverlay()
+        {
+            if (selectorContextMenu == null || mainGameInlineSelectorPanel == null)
+            {
+                return;
+            }
+
+            const float menuWidth = 260f;
+            float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item
+                ? 300f
+                : 240f;
+            if (selectorContextMenu.Rect.width != menuWidth ||
+                selectorContextMenu.Rect.height != menuHeight)
+            {
+                Vector2 menuPosition = selectorContextMenu.Position;
+                float logicalWidth = Screen.width / GetActiveGuiScale();
+                float logicalHeight = Screen.height / GetActiveGuiScale();
+                selectorContextMenu.Rect = new Rect(
+                    Mathf.Clamp(
+                        menuPosition.x + 10f,
+                        4f,
+                        Math.Max(4f, logicalWidth - menuWidth - 4f)),
+                    Mathf.Clamp(
+                        menuPosition.y + 12f,
+                        4f,
+                        Math.Max(4f, logicalHeight - menuHeight - 4f)),
+                    menuWidth,
+                    menuHeight);
+            }
+
+            Event evt = Event.current;
+            if (evt.type == EventType.MouseDown &&
+                !selectorContextMenu.Rect.Contains(evt.mousePosition))
+            {
+                selectorContextMenu = null;
+                evt.Use();
+                return;
+            }
+
+            selectorContextMenu.Rect = DrawMainGameOpaqueContextMenuWindow(
+                MainGameSelectorContextMenuWindowId,
+                selectorContextMenu.Rect,
+                DrawMainGameSelectorContextMenuWindow);
+        }
+
+        private Vector2 GetMainGameCursorGuiPosition()
+        {
+            Vector3 screenPosition = Input.mousePosition;
+            float scale = Math.Max(0.01f, GetActiveGuiScale());
+            return new Vector2(
+                screenPosition.x / scale,
+                (Screen.height - screenPosition.y) / scale);
+        }
+
+        private void AnchorMainGameSelectorContextMenuToCursor()
+        {
+            if (selectorContextMenu == null)
+            {
+                return;
+            }
+
+            selectorContextMenu.Position = GetMainGameCursorGuiPosition();
+            selectorContextMenu.Rect = default(Rect);
+        }
+
+        private Rect DrawMainGameOpaqueContextMenuWindow(
+            int windowId,
+            Rect rect,
+            GUI.WindowFunction drawWindow)
+        {
+            Color previousColor = GUI.color;
+            Color previousBackgroundColor = GUI.backgroundColor;
+            try
+            {
+                GUI.color = Color.white;
+                GUI.backgroundColor = Color.white;
+                return GUI.Window(
+                    windowId,
+                    rect,
+                    drawWindow,
+                    string.Empty,
+                    GetSelectorContextMenuStyle());
+            }
+            finally
+            {
+                GUI.backgroundColor = previousBackgroundColor;
+                GUI.color = previousColor;
+            }
+        }
+
+        private static void DrawMainGameContextMenuBackground(float width, float height)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = Color.white;
+            GUI.DrawTexture(
+                new Rect(0f, 0f, width, height),
+                Texture2D.blackTexture,
+                ScaleMode.StretchToFill,
+                false);
+            GUI.color = previousColor;
+        }
+
+        private void DrawMainGameSelectorContextMenuWindow(int windowId)
+        {
+            if (selectorContextMenu == null || mainGameInlineSelectorPanel == null)
+            {
+                return;
+            }
+
+            DrawMainGameContextMenuBackground(
+                selectorContextMenu.Rect.width,
+                selectorContextMenu.Rect.height);
+
+            if (selectorContextMenu.Type == SelectorContextMenuType.Item)
+            {
+                DrawSelectorItemContextMenu(
+                    mainGameInlineSelectorPanel,
+                    selectorContextMenu);
+            }
+            else
+            {
+                DrawSelectorFolderContextMenu(
+                    mainGameInlineSelectorPanel,
+                    selectorContextMenu);
             }
         }
 
@@ -724,7 +1099,7 @@ namespace StudioCharaEditor
             CharaEditorController controller,
             string[] category2List)
         {
-            GUILayout.Label("Special", theme.MainGameSectionHeaderStyle);
+            GUILayout.Label(LC("Special"), theme.MainGameSectionHeaderStyle);
             ChaControl character = controller?.ociTarget?.charInfo;
             if (character?.chaFile?.parameter != null)
             {
@@ -736,7 +1111,7 @@ namespace StudioCharaEditor
                 }
             }
 
-            GUILayout.Label("Mods", theme.MainGameSectionHeaderStyle);
+            GUILayout.Label(LC("Mods"), theme.MainGameSectionHeaderStyle);
             DrawMainGameDisabledModEntry("Randomize");
             DrawMainGameCollidersEntry();
             DrawMainGameStudioCategoryEntry("Pregnancy+", "Pregnancy +");
@@ -746,7 +1121,7 @@ namespace StudioCharaEditor
                 bool selected = mainGameUtilityPage == MainGameUtilityPage.None &&
                                 catelogIndex2[catelogIndex1] == overlayIndex;
                 if (GUILayout.Button(
-                        "Skin Overlays",
+                        LC("Skin Overlays"),
                         selected ? theme.MainGameListSelectedStyle : theme.MainGameListButtonStyle))
                 {
                     SelectMainGameCategory2(controller, category2List, overlayIndex, "Overlay");
@@ -757,22 +1132,22 @@ namespace StudioCharaEditor
 
         private void DrawMainGameClothesExtraEntries(CharaEditorController controller)
         {
-            GUILayout.Label("Costume Card", theme.MainGameSectionHeaderStyle);
+            GUILayout.Label(LC("Costume Card"), theme.MainGameSectionHeaderStyle);
             if (GUILayout.Button(
-                    "Save / Delete",
+                    LC("Save / Delete"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.CostumeSaveDelete)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.CostumeSaveDelete);
             }
             if (GUILayout.Button(
-                    "Load",
+                    LC("Load"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.CostumeLoad)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.CostumeLoad);
             }
-            GUILayout.Label("Mods", theme.MainGameSectionHeaderStyle);
+            GUILayout.Label(LC("Mods"), theme.MainGameSectionHeaderStyle);
             if (GUILayout.Button(
-                    "Material Editor",
+                    LC("Material Editor"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.MaterialEditorClothes)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.MaterialEditorClothes);
@@ -780,7 +1155,7 @@ namespace StudioCharaEditor
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && controller?.HasOverlayPlugin == true;
             if (GUILayout.Button(
-                    "Clothes Overlays",
+                    LC("Clothes Overlays"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.ClothesOverlays)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.ClothesOverlays);
@@ -795,7 +1170,7 @@ namespace StudioCharaEditor
         {
             // Some Maker plug-ins do not expose a Studio window. Keep their
             // original navigation entry in place without inventing a setter.
-            GUILayout.Label(label, theme.MainGameListButtonStyle);
+            GUILayout.Label(LC(label), theme.MainGameListButtonStyle);
         }
 
         private void DrawMainGameDisabledModEntry(string label)
@@ -806,7 +1181,7 @@ namespace StudioCharaEditor
             style.hover.textColor = disabled;
             style.active.textColor = disabled;
             style.focused.textColor = disabled;
-            GUILayout.Label(label, style);
+            GUILayout.Label(LC(label), style);
         }
 
         private GUIStyle GetMainGameUtilityEntryStyle(
@@ -833,7 +1208,7 @@ namespace StudioCharaEditor
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && available;
             if (GUILayout.Button(
-                    label,
+                    LC(label),
                     GetMainGameUtilityEntryStyle(
                         MainGameUtilityPage.StudioCategory,
                         categoryName)))
@@ -850,7 +1225,7 @@ namespace StudioCharaEditor
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && available;
             if (GUILayout.Button(
-                    "Push Up",
+                    LC("Push Up"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.PushUp)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.PushUp);
@@ -864,7 +1239,7 @@ namespace StudioCharaEditor
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && available;
             if (GUILayout.Button(
-                    "Colliders",
+                    LC("Colliders"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.Colliders)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.Colliders);
@@ -880,17 +1255,26 @@ namespace StudioCharaEditor
             }
             DrawMainGameSettingsPageButton(0, "Name");
 
-            GUILayout.Label("Character Card", theme.MainGameSectionHeaderStyle);
+            GUILayout.Label(LC("Character Card"), theme.MainGameSectionHeaderStyle);
             DrawMainGameSettingsPageButton(3, "Save / Delete");
             DrawMainGameDisabledModEntry("Fusion");
 
-            GUILayout.Label("System", theme.MainGameSectionHeaderStyle);
-            if (GUILayout.Button("Reset Windows Positions", theme.MainGameListButtonStyle))
+            GUILayout.Label(LC("System"), theme.MainGameSectionHeaderStyle);
+            if (GUILayout.Button(LC("Reset Windows Positions"), theme.MainGameListButtonStyle))
             {
                 ResetMainGamePanelPositions();
             }
             DrawMainGameSettingsUiScaleInput();
-            mainGameUseMouseWheel = DrawMainGameCheckbox(mainGameUseMouseWheel, "Use Mouse Wheel in Sliders");
+            bool useMouseWheel = StudioCharaEditor.MainGameUseMouseWheelSliders?.Value ?? false;
+            bool nextUseMouseWheel = DrawMainGameCheckbox(
+                useMouseWheel,
+                LC("Use Mouse Wheel in Sliders"));
+            if (nextUseMouseWheel != useMouseWheel &&
+                StudioCharaEditor.MainGameUseMouseWheelSliders != null)
+            {
+                StudioCharaEditor.MainGameUseMouseWheelSliders.Value = nextUseMouseWheel;
+                StudioCharaEditor.SaveConfigNow();
+            }
         }
 
         private void DrawMainGameSettingsUiScaleInput()
@@ -912,7 +1296,7 @@ namespace StudioCharaEditor
             };
             GUILayout.BeginHorizontal(GUILayout.Height(34f));
             GUILayout.Space(12f);
-            GUILayout.Label("UI Scale", labelStyle, GUILayout.Width(92f), GUILayout.Height(32f));
+            GUILayout.Label(LC("UI Scale"), labelStyle, GUILayout.Width(92f), GUILayout.Height(32f));
             GUI.SetNextControlName("StudioCharaEditorMainGameUiScaleSettings");
             mainGameUiScalePercentText = GUILayout.TextField(
                 mainGameUiScalePercentText,
@@ -920,7 +1304,7 @@ namespace StudioCharaEditor
                 GUILayout.Width(74f),
                 GUILayout.Height(30f));
             if (GUILayout.Button(
-                    "Apply",
+                    LC("Apply"),
                     GetMainGameAuxiliaryButtonStyle(),
                     GUILayout.Width(64f),
                     GUILayout.Height(30f)))
@@ -949,7 +1333,7 @@ namespace StudioCharaEditor
             GUIStyle style = mainGameSettingsPage == page
                 ? theme.MainGameListSelectedStyle
                 : theme.MainGameListButtonStyle;
-            if (GUILayout.Button(label, style))
+            if (GUILayout.Button(LC(label), style))
             {
                 mainGameUtilityPage = MainGameUtilityPage.None;
                 mainGameStudioCategoryName = string.Empty;
@@ -983,7 +1367,7 @@ namespace StudioCharaEditor
             DrawMainGameHairPage(controller, category2List, "SideHair", "Side Hair", "Side Hair Settings");
             DrawMainGameHairPage(controller, category2List, "ExtensionHair", "Hair Extensions", "Hair Extensions Settings");
 
-            GUILayout.Label("Render Settings", theme.MainGameSectionHeaderStyle);
+            GUILayout.Label(LC("Render Settings"), theme.MainGameSectionHeaderStyle);
             if (character?.fileHair != null)
             {
                 int shaderType = character.fileHair.shaderType;
@@ -999,9 +1383,9 @@ namespace StudioCharaEditor
                 GUILayout.EndHorizontal();
             }
 
-            GUILayout.Label("Mods", theme.MainGameSectionHeaderStyle);
+            GUILayout.Label(LC("Mods"), theme.MainGameSectionHeaderStyle);
             if (GUILayout.Button(
-                    "Material Editor",
+                    LC("Material Editor"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.MaterialEditorHair)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.MaterialEditorHair);
@@ -1011,13 +1395,13 @@ namespace StudioCharaEditor
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && hairShaderAvailable;
             if (GUILayout.Button(
-                    "Hair Shader Swapper",
+                    LC("Hair Shader Swapper"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.HairShaderSwapper)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.HairShaderSwapper);
             }
             if (GUILayout.Button(
-                    "Hair Shader Properties",
+                    LC("Hair Shader Properties"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.HairShaderProperties)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.HairShaderProperties);
@@ -1037,7 +1421,9 @@ namespace StudioCharaEditor
                 return;
             }
             bool oldValue = (bool)getter(controller);
-            bool newValue = DrawMainGameCheckbox(oldValue, displayTitle);
+            bool newValue = DrawMainGameCheckbox(
+                oldValue,
+                GetMainGameLocalizedName(toggleTitle, displayTitle));
             if (oldValue != newValue && controller.Category2SetFuncDict.TryGetValue(key, out CharaEditorController.Category2SetFunc setter))
             {
                 setter(controller, newValue);
@@ -1051,7 +1437,10 @@ namespace StudioCharaEditor
             string groupTitle,
             string displayTitle)
         {
-            GUILayout.Label(groupTitle, theme.MainGameSectionHeaderStyle);
+            string localizedPage = GetMainGameLocalizedName(rawPage, displayTitle);
+            GUILayout.Label(
+                GetMainGameLocalizedName(rawPage, groupTitle),
+                theme.MainGameSectionHeaderStyle);
             int categoryIndex = Array.IndexOf(category2List, rawPage);
             if (categoryIndex < 0)
             {
@@ -1060,7 +1449,7 @@ namespace StudioCharaEditor
             bool selected = mainGameUtilityPage == MainGameUtilityPage.None &&
                             catelogIndex2[catelogIndex1] == categoryIndex;
             GUIStyle style = selected ? theme.MainGameListSelectedStyle : theme.MainGameListButtonStyle;
-            if (GUILayout.Button(displayTitle, style))
+            if (GUILayout.Button(localizedPage, style))
             {
                 SelectMainGameCategory2(controller, category2List, categoryIndex, rawPage);
             }
@@ -1068,16 +1457,22 @@ namespace StudioCharaEditor
 
         private bool DrawMainGameCheckbox(bool value, string label, params GUILayoutOption[] options)
         {
+            label = LC(label);
             GUIStyle labelStyle = GUI.skin.label;
-            GUIContent content = new GUIContent(label);
+            mainGameScratchContent.text = label;
+            mainGameScratchContent.tooltip = string.Empty;
+            GUIContent content = mainGameScratchContent;
             Rect rect = GUILayoutUtility.GetRect(28f + labelStyle.CalcSize(content).x, 27f, options);
             return DrawMainGameCheckbox(rect, value, label);
         }
 
         private bool DrawMainGameCheckbox(Rect rect, bool value, string label)
         {
+            label = LC(label);
             GUIStyle labelStyle = GUI.skin.label;
-            GUIContent content = new GUIContent(label);
+            mainGameScratchContent.text = label;
+            mainGameScratchContent.tooltip = string.Empty;
+            GUIContent content = mainGameScratchContent;
             Rect iconRect = new Rect(rect.x + 2f, rect.y + (rect.height - 20f) * 0.5f, 20f, 20f);
             Rect labelRect = new Rect(iconRect.xMax + 8f, rect.y, Math.Max(0f, rect.xMax - iconRect.xMax - 8f), rect.height);
             Event evt = Event.current;
@@ -1103,21 +1498,31 @@ namespace StudioCharaEditor
             int fontSize = 0,
             float fixedWidth = 0f)
         {
+            label = LC(label);
             GUIStyle labelStyle = GUI.skin.toggle ?? GUI.skin.label;
             if (fontSize > 0)
             {
-                labelStyle = new GUIStyle(GUI.skin.label)
+                if (fontSize == 16)
                 {
-                    alignment = TextAnchor.MiddleLeft,
-                    fontSize = fontSize,
-                    fixedHeight = 0f,
-                    padding = new RectOffset(0, 0, 0, 0),
-                    margin = new RectOffset(0, 0, 0, 0),
-                    clipping = TextClipping.Clip
-                };
+                    mainGameRadio16Style = mainGameRadio16Style ??
+                                           CreateMainGameRadioStyle(16);
+                    labelStyle = mainGameRadio16Style;
+                }
+                else if (fontSize == 20)
+                {
+                    mainGameRadio20Style = mainGameRadio20Style ??
+                                           CreateMainGameRadioStyle(20);
+                    labelStyle = mainGameRadio20Style;
+                }
+                else
+                {
+                    labelStyle = CreateMainGameRadioStyle(fontSize);
+                }
             }
 
-            GUIContent content = new GUIContent(label);
+            mainGameScratchContent.text = label;
+            mainGameScratchContent.tooltip = string.Empty;
+            GUIContent content = mainGameScratchContent;
             float rowHeight = fontSize > 0 ? 34f : 20f;
             GUILayoutOption widthOption = fixedWidth > 0f
                 ? GUILayout.Width(fixedWidth)
@@ -1157,6 +1562,19 @@ namespace StudioCharaEditor
                 labelStyle.Draw(labelRect, content, false, false, value, false);
             }
             return !selected && value;
+        }
+
+        private static GUIStyle CreateMainGameRadioStyle(int fontSize)
+        {
+            return new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                fontSize = fontSize,
+                fixedHeight = 0f,
+                padding = new RectOffset(0, 0, 0, 0),
+                margin = new RectOffset(0, 0, 0, 0),
+                clipping = TextClipping.Clip
+            };
         }
 
         private static void SetMainGameHairShader(ChaControl character, int shaderType)
@@ -1222,14 +1640,29 @@ namespace StudioCharaEditor
 
         private static Type FindLoadedType(string fullName)
         {
+            if (string.IsNullOrEmpty(fullName))
+            {
+                return null;
+            }
+            if (MainGameLoadedTypeCache.TryGetValue(fullName, out Type cached))
+            {
+                return cached;
+            }
+
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 Type type = assembly.GetType(fullName, false);
                 if (type != null)
                 {
+                    MainGameLoadedTypeCache[fullName] = type;
                     return type;
                 }
             }
+            // Character Editor is initialized after the regular BepInEx plug-in
+            // load pass, so an unavailable optional integration stays
+            // unavailable for this UI instance. Caching misses avoids scanning
+            // every loaded assembly twice per frame from Plugin Settings.
+            MainGameLoadedTypeCache[fullName] = null;
             return null;
         }
 
@@ -1578,6 +2011,58 @@ namespace StudioCharaEditor
             GUI.enabled = oldEnabled;
         }
 
+        private void RefreshMainGameAdvancedBoneModForSelection()
+        {
+            Type advancedGuiType = FindLoadedType(
+                "KKABMX.GUI.KKABMX_AdvancedGUI");
+            if (advancedGuiType == null)
+            {
+                return;
+            }
+
+            try
+            {
+                PropertyInfo enabledProperty = advancedGuiType.GetProperty(
+                    "Enabled",
+                    BindingFlags.Static | BindingFlags.Public |
+                    BindingFlags.NonPublic);
+                bool wasEnabled = enabledProperty?.PropertyType == typeof(bool) &&
+                                  (bool)enabledProperty.GetValue(null, null);
+                if (!wasEnabled)
+                {
+                    return;
+                }
+
+                // AdvancedGUI stores one static BoneController. Merely changing
+                // the Studio selection leaves it editing the previous character,
+                // so explicitly perform the same off/on transition as its toggle.
+                InvokeMainGameStaticMethod(advancedGuiType, "Disable");
+                if (TryGetMainGameAdvancedBoneMod(
+                        out Type refreshedGuiType,
+                        out Component boneController))
+                {
+                    InvokeMainGameStaticMethod(
+                        refreshedGuiType,
+                        "Enable",
+                        boneController);
+                    StudioCharaEditor.Logger.LogInfo(
+                        "Advanced BoneMod window rebound to selected character '" +
+                        (ociTarget?.treeNodeObject?.textName ?? "<unknown>") + "'.");
+                }
+                else
+                {
+                    StudioCharaEditor.Logger.LogInfo(
+                        "Advanced BoneMod window closed because the new selection has no BoneController.");
+                }
+            }
+            catch (Exception exception)
+            {
+                StudioCharaEditor.Logger.LogWarning(
+                    "Advanced BoneMod character refresh failed: " +
+                    (exception.InnerException?.Message ?? exception.Message));
+            }
+        }
+
         private void DrawMainGameCollapseButton(bool statusWindow)
         {
             float width = statusWindow ? mainGameStatusRect.width : mainGamePluginRect.width;
@@ -1618,12 +2103,12 @@ namespace StudioCharaEditor
 
         private void DrawMainGameCollapsedStatusWindow(int windowId)
         {
-            DrawMainGameCollapsedAuxiliaryWindow("Status", true);
+            DrawMainGameCollapsedAuxiliaryWindow(LC("Status"), true);
         }
 
         private void DrawMainGameCollapsedPluginWindow(int windowId)
         {
-            DrawMainGameCollapsedAuxiliaryWindow("Plugin settings", false);
+            DrawMainGameCollapsedAuxiliaryWindow(LC("Plugin settings"), false);
         }
 
         private void DrawMainGameCollapsedAuxiliaryWindow(string title, bool statusWindow)
@@ -1667,11 +2152,11 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal(GUILayout.Height(36f));
             int eyesLook = character?.GetLookEyesPtn() ?? 0;
-            GUILayout.Label("Look", GetMainGameStatusLabelStyle(), GUILayout.Width(60f), GUILayout.Height(36f));
+            GUILayout.Label(LC("Look"), GetMainGameStatusLabelStyle(), GUILayout.Width(60f), GUILayout.Height(36f));
             if (DrawMainGameRadio(eyesLook == 1, "Camera", 16, 90f)) ociTarget.ChangeLookEyesPtn(1, true);
             if (DrawMainGameRadio(eyesLook == 0, "Front", 16, 80f)) ociTarget.ChangeLookEyesPtn(0, true);
             GUILayout.FlexibleSpace();
-            GUILayout.Label("Play Pose", GetMainGameStatusLabelStyle(), GUILayout.Width(70f), GUILayout.Height(36f));
+            GUILayout.Label(LC("Play Pose"), GetMainGameStatusLabelStyle(), GUILayout.Width(70f), GUILayout.Height(36f));
             bool posePlaying = ociTarget != null && ociTarget.animeSpeed > 0f;
             if (GUILayout.Button(
                     posePlaying ? "II" : ">",
@@ -1685,7 +2170,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal(GUILayout.Height(36f));
             int neckLook = character?.GetLookNeckPtn() ?? 0;
-            GUILayout.Label("Neck", GetMainGameStatusLabelStyle(), GUILayout.Width(60f), GUILayout.Height(36f));
+            GUILayout.Label(LC("Neck"), GetMainGameStatusLabelStyle(), GUILayout.Width(60f), GUILayout.Height(36f));
             if (DrawMainGameRadio(neckLook == 1, "Camera", 16, 90f)) ociTarget.ChangeLookNeckPtn(1);
             if (DrawMainGameRadio(neckLook == 3, "Pose", 16, 80f)) ociTarget.ChangeLookNeckPtn(3);
             GUILayout.EndHorizontal();
@@ -1802,13 +2287,13 @@ namespace StudioCharaEditor
             Rect labelRect = new Rect(rowRect.x, rowRect.y, labelWidth, rowRect.height);
             Rect valueRect = new Rect(labelRect.xMax + 6f, rowRect.y + 2f, valueWidth, rowRect.height - 4f);
             Rect applyRect = new Rect(valueRect.xMax + 6f, rowRect.y + 2f, applyWidth, rowRect.height - 4f);
-            GUI.Label(labelRect, "UI Scale", GetMainGameAuxiliaryLabelStyle());
+            GUI.Label(labelRect, LC("UI Scale"), GetMainGameAuxiliaryLabelStyle());
             GUI.SetNextControlName("StudioCharaEditorMainGameUiScaleCompact");
             mainGameUiScalePercentText = GUI.TextField(
                 valueRect,
                 mainGameUiScalePercentText,
                 GetMainGameAuxiliaryValueStyle());
-            if (GUI.Button(applyRect, "Apply", GetMainGameAuxiliaryButtonStyle()))
+            if (GUI.Button(applyRect, LC("Apply"), GetMainGameAuxiliaryButtonStyle()))
             {
                 ApplyMainGameUiScaleText();
             }
@@ -1830,7 +2315,7 @@ namespace StudioCharaEditor
         private void DrawMainGamePoseStepper(ChaControl character)
         {
             GUILayout.Label(
-                "Pose",
+                LC("Pose"),
                 GetMainGameStatusLabelStyle(),
                 GUILayout.Width(70f),
                 GUILayout.Height(36f));
@@ -1883,7 +2368,7 @@ namespace StudioCharaEditor
             currentIndex = Mathf.Clamp(currentIndex, 0, Math.Max(0, keys.Length - 1));
             string inputKey = inputName + ":" + (character?.GetInstanceID() ?? 0);
             GUILayout.Label(
-                label,
+                LC(label),
                 GetMainGameStatusLabelStyle(),
                 GUILayout.Width(70f),
                 GUILayout.Height(36f));
@@ -1927,8 +2412,8 @@ namespace StudioCharaEditor
                 input = currentValue.ToString(CultureInfo.InvariantCulture);
             }
 
-            GUI.SetNextControlName(controlName);
-            string nextInput = GUILayout.TextField(
+            string nextInput = DrawMainGameSharedNumericTextField(
+                controlName,
                 input,
                 GetMainGameAuxiliaryValueStyle(),
                 GUILayout.Width(40f),
@@ -1944,13 +2429,134 @@ namespace StudioCharaEditor
             }
         }
 
+        private string DrawMainGameSharedNumericTextField(
+            string controlName,
+            string input,
+            GUIStyle style,
+            params GUILayoutOption[] options)
+        {
+            Rect rect = GUILayoutUtility.GetRect(
+                GUIContent.none,
+                style,
+                options);
+            return DrawMainGameSharedNumericTextField(
+                rect,
+                controlName,
+                input,
+                style);
+        }
+
+        private string DrawMainGameSharedNumericTextField(
+            Rect rect,
+            string controlName,
+            string input,
+            GUIStyle style)
+        {
+            if (MainGameDoTextField == null)
+            {
+                GUI.SetNextControlName(controlName);
+                return GUI.TextField(rect, input, style);
+            }
+
+            if (!mainGameNumericFieldContents.TryGetValue(
+                    controlName,
+                    out GUIContent content))
+            {
+                content = new GUIContent();
+                mainGameNumericFieldContents[controlName] = content;
+            }
+            content.text = input ?? string.Empty;
+
+            int controlId = GetMainGameNumericControlId(controlName);
+            Event evt = Event.current;
+            EventType rawType = evt.rawType;
+            if (rawType == EventType.MouseDown &&
+                evt.button == 0 &&
+                rect.Contains(evt.mousePosition))
+            {
+                mainGameActiveNumericControlName = controlName;
+                mainGameActiveNumericControlId = controlId;
+            }
+            if (string.Equals(
+                    mainGameActiveNumericControlName,
+                    controlName,
+                    StringComparison.Ordinal) &&
+                (rawType == EventType.MouseDrag || rawType == EventType.MouseUp))
+            {
+                GUIUtility.hotControl = controlId;
+                GUIUtility.keyboardControl = controlId;
+            }
+            MainGameDoTextField(
+                rect,
+                controlId,
+                content,
+                false,
+                -1,
+                style);
+            return content.text;
+        }
+
+        private int GetMainGameNumericControlId(string controlName)
+        {
+            if (mainGameNumericControlIds.TryGetValue(controlName, out int controlId))
+            {
+                return controlId;
+            }
+
+            uint hash = 2166136261u;
+            string value = controlName ?? string.Empty;
+            for (int index = 0; index < value.Length; index++)
+            {
+                hash ^= value[index];
+                hash *= 16777619u;
+            }
+            controlId = 0x40000000 | (int)(hash & 0x1fffffff);
+            while (mainGameUsedNumericControlIds.Contains(controlId))
+            {
+                controlId++;
+            }
+            mainGameNumericControlIds[controlName] = controlId;
+            mainGameUsedNumericControlIds.Add(controlId);
+            return controlId;
+        }
+
+        private static MainGameDoTextFieldDelegate CreateMainGameDoTextFieldDelegate()
+        {
+            try
+            {
+                MethodInfo method = typeof(GUI).GetMethod(
+                    "DoTextField",
+                    BindingFlags.Static | BindingFlags.NonPublic,
+                    null,
+                    new[]
+                    {
+                        typeof(Rect),
+                        typeof(int),
+                        typeof(GUIContent),
+                        typeof(bool),
+                        typeof(int),
+                        typeof(GUIStyle)
+                    },
+                    null);
+                return method == null
+                    ? null
+                    : (MainGameDoTextFieldDelegate)Delegate.CreateDelegate(
+                        typeof(MainGameDoTextFieldDelegate),
+                        method);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private void ResetMainGameStatusValueInput(string inputKey)
         {
             mainGameStatusValueInputs.Remove(inputKey);
             GUI.FocusControl(string.Empty);
         }
 
-        private static int[] GetMainGameStatusKeys(
+        private int[] GetMainGameStatusKeys(
             ChaControl character,
             ChaListDefine.CategoryNo maleCategory,
             ChaListDefine.CategoryNo femaleCategory)
@@ -1960,13 +2566,19 @@ namespace StudioCharaEditor
                 return new int[0];
             }
             ChaListDefine.CategoryNo category = character.sex == 0 ? maleCategory : femaleCategory;
+            if (mainGameStatusKeysCache.TryGetValue(category, out int[] cached))
+            {
+                return cached;
+            }
             Dictionary<int, ListInfoBase> entries = Singleton<Manager.Character>.Instance.chaListCtrl.GetCategoryInfo(category);
             if (entries == null || entries.Count == 0)
             {
-                return new int[0];
+                mainGameStatusKeysCache[category] = EmptyStatusKeys;
+                return EmptyStatusKeys;
             }
             int[] keys = new int[entries.Count];
             entries.Keys.CopyTo(keys, 0);
+            mainGameStatusKeysCache[category] = keys;
             return keys;
         }
 
@@ -2109,14 +2721,21 @@ namespace StudioCharaEditor
 
         private bool DrawMainGameCompactToggle(bool value, string label, params GUILayoutOption[] options)
         {
-            GUIStyle labelStyle = new GUIStyle(GetMainGameAuxiliaryLabelStyle())
+            label = LC(label);
+            if (mainGameCompactToggleLabelStyle == null)
             {
-                fontSize = 14,
-                alignment = TextAnchor.MiddleLeft,
-                wordWrap = true,
-                clipping = TextClipping.Clip
-            };
-            GUIContent content = new GUIContent(label);
+                mainGameCompactToggleLabelStyle = new GUIStyle(GetMainGameAuxiliaryLabelStyle())
+                {
+                    fontSize = 14,
+                    alignment = TextAnchor.MiddleLeft,
+                    wordWrap = true,
+                    clipping = TextClipping.Clip
+                };
+            }
+            GUIStyle labelStyle = mainGameCompactToggleLabelStyle;
+            mainGameScratchContent.text = label;
+            mainGameScratchContent.tooltip = string.Empty;
+            GUIContent content = mainGameScratchContent;
             Rect rect = GUILayoutUtility.GetRect(24f + labelStyle.CalcSize(content).x, 38f, options);
             Rect iconRect = new Rect(rect.x, rect.y + (rect.height - 17f) * 0.5f, 17f, 17f);
             Rect labelRect = new Rect(iconRect.xMax + 5f, rect.y, Math.Max(0f, rect.xMax - iconRect.xMax - 5f), rect.height);
@@ -2137,6 +2756,21 @@ namespace StudioCharaEditor
 
         private void DrawMainGameRightWindow(int windowId)
         {
+            Event currentEvent = Event.current;
+            if (currentEvent.rawType == EventType.MouseDown && currentEvent.button == 0)
+            {
+                mainGameActiveNumericControlName = string.Empty;
+                mainGameActiveNumericControlId = 0;
+            }
+            else if ((currentEvent.rawType == EventType.MouseDrag ||
+                      currentEvent.rawType == EventType.MouseUp) &&
+                     mainGameActiveNumericControlId != 0)
+            {
+                // Keep the scroll view and neighbouring sliders from taking
+                // ownership of a text-selection drag before its TextField is
+                // reached later in the GUILayout pass.
+                GUIUtility.hotControl = mainGameActiveNumericControlId;
+            }
             HandleMainGameWindowFocus(windowId);
             HandleMainGameResizeGripInput(
                 windowId,
@@ -2170,7 +2804,6 @@ namespace StudioCharaEditor
                 GUILayout.Label(LC("Please select a charactor to edit."), largeLabel);
                 GUILayout.FlexibleSpace();
             }
-
             Rect closeRect = new Rect(mainGameRightRect.width - 38f, 8f, 28f, 28f);
             if (GUI.Button(closeRect, GUIContent.none, closeButtonStyle ?? GUI.skin.button))
             {
@@ -2188,20 +2821,23 @@ namespace StudioCharaEditor
             if (mainGameSelectorVisibleThisFrame)
             {
                 Rect selectedRect = new Rect(mainGameRightRect.width - 74f, 8f, 28f, 28f);
-                GUIStyle selectedButtonStyle = new GUIStyle(GUI.skin.label)
+                if (mainGameScrollToSelectionButtonStyle == null)
                 {
-                    fontSize = 25,
-                    alignment = TextAnchor.MiddleCenter,
-                    contentOffset = new Vector2(0f, -3f)
-                };
-                selectedButtonStyle.normal.background = null;
-                selectedButtonStyle.hover.background = null;
-                selectedButtonStyle.active.background = null;
-                selectedButtonStyle.normal.textColor = Color.white;
-                selectedButtonStyle.hover.textColor = new Color32(112, 205, 67, 255);
-                selectedButtonStyle.active.textColor = new Color32(112, 205, 67, 255);
-                selectedButtonStyle.focused.textColor = new Color32(112, 205, 67, 255);
-                if (GUI.Button(selectedRect, "\u25BC", selectedButtonStyle))
+                    mainGameScrollToSelectionButtonStyle = new GUIStyle(GUI.skin.label)
+                    {
+                        fontSize = 25,
+                        alignment = TextAnchor.MiddleCenter,
+                        contentOffset = new Vector2(0f, -3f)
+                    };
+                    mainGameScrollToSelectionButtonStyle.normal.background = null;
+                    mainGameScrollToSelectionButtonStyle.hover.background = null;
+                    mainGameScrollToSelectionButtonStyle.active.background = null;
+                    mainGameScrollToSelectionButtonStyle.normal.textColor = Color.white;
+                    mainGameScrollToSelectionButtonStyle.hover.textColor = new Color32(112, 205, 67, 255);
+                    mainGameScrollToSelectionButtonStyle.active.textColor = new Color32(112, 205, 67, 255);
+                    mainGameScrollToSelectionButtonStyle.focused.textColor = new Color32(112, 205, 67, 255);
+                }
+                if (GUI.Button(selectedRect, "\u25BC", mainGameScrollToSelectionButtonStyle))
                 {
                     mainGameScrollToSelectorKey = mainGameVisibleSelectorKey;
                 }
@@ -2661,7 +3297,7 @@ namespace StudioCharaEditor
                 GUILayout.Height(32f));
             GUILayout.FlexibleSpace();
             if (GUILayout.Button(
-                    "Folders",
+                    LC("Folders"),
                     mainGameCoordinateFolderOpen
                         ? GetMainGameCoordinateHeaderSelectedStyle()
                         : GetMainGameCoordinateHeaderStyle(),
@@ -2671,7 +3307,7 @@ namespace StudioCharaEditor
                 mainGameCoordinateFolderOpen = !mainGameCoordinateFolderOpen;
             }
             if (GUILayout.Button(
-                    "Newest",
+                    LC("Newest"),
                     mainGameCoordinateSortNewest
                         ? GetMainGameCoordinateHeaderSelectedStyle()
                         : GetMainGameCoordinateHeaderStyle(),
@@ -2683,7 +3319,7 @@ namespace StudioCharaEditor
                 mainGameCoordinateScroll = Vector2.zero;
             }
             if (GUILayout.Button(
-                    "Refresh",
+                    LC("Refresh"),
                     GetMainGameCoordinateHeaderStyle(),
                     GUILayout.Width(72f),
                     GUILayout.Height(30f)))
@@ -2698,7 +3334,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal(GUILayout.Height(34f));
             GUILayout.Label(
-                "Search",
+                LC("Search"),
                 GetMainGameAuxiliaryLabelStyle(),
                 GUILayout.Width(62f),
                 GUILayout.Height(32f));
@@ -2791,7 +3427,7 @@ namespace StudioCharaEditor
                 ? mainGameVisibleCoordinateCards[mainGameSelectedCoordinateCard]
                 : null;
             if (GUILayout.Button(
-                    "Load Clothing",
+                    LC("Load Clothing"),
                     GetMainGameAuxiliaryButtonStyle(),
                     GUILayout.Width(buttonWidth),
                     GUILayout.Height(34f)))
@@ -2800,7 +3436,7 @@ namespace StudioCharaEditor
                     LoadMainGameCoordinateCard(selected, false, false));
             }
             if (GUILayout.Button(
-                    "Load Accessories",
+                    LC("Load Accessories"),
                     GetMainGameAuxiliaryButtonStyle(),
                     GUILayout.Width(buttonWidth),
                     GUILayout.Height(34f)))
@@ -2809,7 +3445,7 @@ namespace StudioCharaEditor
                     LoadMainGameCoordinateCard(selected, true, false));
             }
             if (GUILayout.Button(
-                    "Load All",
+                    LC("Load All"),
                     GetMainGameAuxiliaryButtonStyle(),
                     GUILayout.Width(buttonWidth),
                     GUILayout.Height(34f)))
@@ -2824,7 +3460,7 @@ namespace StudioCharaEditor
         private void DrawMainGameCoordinateSaveFooter(bool validSelection)
         {
             bool oldEnabled = GUI.enabled;
-            float buttonWidth = Math.Max(90f, (mainGameRightContentWidth - 6f) / 2f);
+            float buttonWidth = Math.Max(76f, (mainGameRightContentWidth - 12f) / 3f);
             MainGameCoordinateCard selected = validSelection
                 ? mainGameVisibleCoordinateCards[mainGameSelectedCoordinateCard]
                 : null;
@@ -2832,8 +3468,8 @@ namespace StudioCharaEditor
             GUI.enabled = oldEnabled && validSelection;
             string deleteLabel = mainGameCoordinateDeleteConfirmation == mainGameSelectedCoordinateCard &&
                                  validSelection
-                ? "Confirm Delete"
-                : "Delete";
+                ? LC("Confirm Delete")
+                : LC("Delete");
             if (GUILayout.Button(
                     deleteLabel,
                     GetMainGameAuxiliaryButtonStyle(),
@@ -2850,9 +3486,33 @@ namespace StudioCharaEditor
                     mainGameCoordinateCardStatus = "Press Confirm Delete to remove " + selected.Name + ".";
                 }
             }
+            GUI.enabled = oldEnabled && validSelection && ociTarget?.charInfo != null &&
+                          mainGameCoordinateActionCoroutine == null;
+            if (GUILayout.Button(
+                    LC("Save"),
+                    GetMainGameAuxiliaryButtonStyle(),
+                    GUILayout.Width(buttonWidth),
+                    GUILayout.Height(34f)))
+            {
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate overwrite: Save clicked for '" + selected.Name +
+                    "' at '" + selected.Path + "'.");
+                mainGameCoordinateDeleteConfirmation = -1;
+                mainGameCoordinateOverwriteCard = selected;
+                mainGameCoordinateOverwritePromptOpen = true;
+                mainGameCoordinateOverwriteRect.position = new Vector2(
+                    Mathf.Clamp(
+                        mainGameRightRect.center.x - mainGameCoordinateOverwriteRect.width * 0.5f,
+                        4f,
+                        Math.Max(4f, Screen.width / GetActiveGuiScale() - mainGameCoordinateOverwriteRect.width - 4f)),
+                    Mathf.Clamp(
+                        mainGameRightRect.center.y - mainGameCoordinateOverwriteRect.height * 0.5f,
+                        4f,
+                        Math.Max(4f, Screen.height / GetActiveGuiScale() - mainGameCoordinateOverwriteRect.height - 4f)));
+            }
             GUI.enabled = oldEnabled && ociTarget?.charInfo != null;
             if (GUILayout.Button(
-                    "Save New",
+                    LC("Save New"),
                     GetMainGameAuxiliaryButtonStyle(),
                     GUILayout.Width(buttonWidth),
                     GUILayout.Height(34f)))
@@ -2864,6 +3524,635 @@ namespace StudioCharaEditor
             GUI.enabled = oldEnabled;
         }
 
+        private void DrawMainGameCoordinateOverwriteWindow(int windowId)
+        {
+            GUIStyle titleStyle = new GUIStyle(theme.MainGameTitleStyle ?? GUI.skin.label)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                fontSize = 22
+            };
+            GUILayout.Space(8f);
+            GUILayout.Label(LC("Overwrite coordinate"), titleStyle, GUILayout.Height(32f));
+            DrawMainGameDivider();
+            GUILayout.Space(6f);
+            GUILayout.Label(
+                mainGameCoordinateOverwriteCard == null
+                    ? LC("No coordinate selected")
+                    : mainGameCoordinateOverwriteCard.Name,
+                GetMainGameAuxiliaryLabelStyle(),
+                GUILayout.Height(28f));
+            GUILayout.BeginHorizontal(GUILayout.Height(38f));
+            bool oldEnabled = GUI.enabled;
+            GUI.enabled = oldEnabled && mainGameCoordinateOverwriteCard != null &&
+                          ociTarget?.charInfo != null &&
+                          mainGameCoordinateActionCoroutine == null;
+            if (GUILayout.Button(
+                    LC("Overwrite Thumbnail"),
+                    GetMainGameAuxiliaryButtonStyle(),
+                    GUILayout.Height(36f)))
+            {
+                MainGameCoordinateCard card = mainGameCoordinateOverwriteCard;
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate overwrite: Overwrite Thumbnail selected for '" +
+                    card?.Path + "'.");
+                mainGameCoordinateOverwritePromptOpen = false;
+                QueueMainGameCoordinateAction(() =>
+                    OverwriteMainGameCoordinateCard(card, true));
+            }
+            if (GUILayout.Button(
+                    LC("Keep Thumbnail"),
+                    GetMainGameAuxiliaryButtonStyle(),
+                    GUILayout.Height(36f)))
+            {
+                MainGameCoordinateCard card = mainGameCoordinateOverwriteCard;
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate overwrite: Keep Thumbnail selected for '" +
+                    card?.Path + "'.");
+                mainGameCoordinateOverwritePromptOpen = false;
+                QueueMainGameCoordinateAction(() =>
+                    OverwriteMainGameCoordinateCard(card, false));
+            }
+            GUI.enabled = oldEnabled;
+            GUILayout.EndHorizontal();
+
+            Rect closeRect = new Rect(mainGameCoordinateOverwriteRect.width - 22f, 4f, 16f, 16f);
+            if (GUI.Button(closeRect, GUIContent.none, closeButtonStyle ?? GUI.skin.button))
+            {
+                mainGameCoordinateOverwritePromptOpen = false;
+                mainGameCoordinateOverwriteCard = null;
+            }
+            GUI.DragWindow(new Rect(0f, 0f, Math.Max(0f, mainGameCoordinateOverwriteRect.width - 28f), 30f));
+        }
+
+        private void OverwriteMainGameCoordinateCard(
+            MainGameCoordinateCard card,
+            bool overwriteThumbnail)
+        {
+            ChaControl character = ociTarget?.charInfo;
+            ChaFileCoordinate currentCoordinate = character?.chaFile?.coordinate;
+            if (card == null || currentCoordinate == null)
+            {
+                StudioCharaEditor.Logger.LogWarning(
+                    "Coordinate overwrite did not start: selected card or character coordinate is null.");
+                return;
+            }
+
+            string operationId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            string temporaryPath = null;
+            string rollbackPath = null;
+            bool originalRecycled = false;
+            bool preserveRollback = false;
+            byte[] originalThumbnail = currentCoordinate.pngData;
+            string originalName = currentCoordinate.coordinateName;
+            string cardName = card.Name;
+            try
+            {
+                string root = Path.GetFullPath(GetMainGameCoordinateDirectory())
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+                    Path.DirectorySeparatorChar;
+                string target = Path.GetFullPath(card.Path);
+                if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(target))
+                {
+                    throw new InvalidOperationException(
+                        "The selected card is outside the coordinate folder or no longer exists.");
+                }
+
+                // Studio can keep the live and file coordinate objects separate.
+                // The game's own coordinate saver writes chaFile.coordinate, so
+                // make sure it contains the clothes and accessories currently
+                // visible on the character before serializing it.
+                if (character.nowCoordinate != null)
+                {
+                    currentCoordinate.clothes = character.nowCoordinate.clothes;
+                    currentCoordinate.accessory = character.nowCoordinate.accessory;
+                }
+
+                string currentPayloadHash = GetMainGameCoordinatePayloadHash(currentCoordinate);
+                StudioCharaEditor.Logger.LogInfo(
+                    "[Coordinate overwrite " + operationId + "] START target='" + target +
+                    "', mode=" + (overwriteThumbnail ? "overwrite thumbnail" : "keep thumbnail") +
+                    ", currentPayload=" + currentPayloadHash +
+                    ", currentItems=" + DescribeMainGameCoordinateItems(currentCoordinate) + ".");
+
+                byte[] thumbnailBytes;
+                if (overwriteThumbnail)
+                {
+                    StudioCharaEditor.Logger.LogInfo(
+                        "[Coordinate overwrite " + operationId + "] Capturing a new thumbnail after end-of-frame.");
+                    Texture2D captured = CaptureSavingThumbnailPhoto();
+                    try
+                    {
+                        thumbnailBytes = captured.EncodeToPNG();
+                        if (thumbnailBytes == null || thumbnailBytes.Length == 0)
+                        {
+                            throw new InvalidDataException("The captured thumbnail encoded to zero bytes.");
+                        }
+                        StudioCharaEditor.Logger.LogInfo(
+                            "[Coordinate overwrite " + operationId + "] New thumbnail created: " +
+                            captured.width + "x" + captured.height + ", bytes=" +
+                            thumbnailBytes.Length + ", sha256=" +
+                            GetMainGameBytesHash(thumbnailBytes) + ".");
+                    }
+                    finally
+                    {
+                        Destroy(captured);
+                    }
+                }
+                else
+                {
+                    thumbnailBytes = ReadPngImageBytes(target);
+                    StudioCharaEditor.Logger.LogInfo(
+                        "[Coordinate overwrite " + operationId + "] Existing thumbnail retained: bytes=" +
+                        thumbnailBytes.Length + ", sha256=" +
+                        GetMainGameBytesHash(thumbnailBytes) + ".");
+                }
+
+                string displayName = TryReadMainGameCoordinateDisplayName(target);
+                currentCoordinate.pngData = thumbnailBytes;
+                currentCoordinate.coordinateName = string.IsNullOrWhiteSpace(displayName)
+                    ? card.Name
+                    : displayName;
+
+                string targetDirectory = Path.GetDirectoryName(target);
+                Directory.CreateDirectory(targetDirectory);
+                temporaryPath = Path.Combine(
+                    targetDirectory,
+                    ".StudioCharaEditor-overwrite-" + Guid.NewGuid().ToString("N") + ".png");
+                rollbackPath = temporaryPath + ".original";
+                StudioCharaEditor.Logger.LogInfo(
+                    "[Coordinate overwrite " + operationId + "] Writing replacement to temporary file '" +
+                    temporaryPath + "'.");
+                SaveMainGameCoordinateWithPluginData(
+                    character,
+                    currentCoordinate,
+                    temporaryPath,
+                    (int)Manager.GameSystem.Instance.language);
+                if (!File.Exists(temporaryPath) || new FileInfo(temporaryPath).Length == 0)
+                {
+                    throw new IOException("The replacement coordinate was not written.");
+                }
+                ChaFileCoordinate verification = new ChaFileCoordinate();
+                if (!verification.LoadFile(temporaryPath))
+                {
+                    throw new InvalidDataException(
+                        "The replacement coordinate could not be read back after saving.");
+                }
+                string verificationPayloadHash =
+                    GetMainGameCoordinatePayloadHash(verification);
+                string currentMaterialEditorData =
+                    DescribeMainGameMaterialEditorData(currentCoordinate);
+                string verificationMaterialEditorData =
+                    DescribeMainGameMaterialEditorData(verification);
+                if (!string.Equals(
+                        currentMaterialEditorData,
+                        verificationMaterialEditorData,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        "Material Editor coordinate data differs after saving " +
+                        "(current={" + currentMaterialEditorData + "}, saved={" +
+                        verificationMaterialEditorData + "}).");
+                }
+                if (!string.Equals(
+                        currentPayloadHash,
+                        verificationPayloadHash,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        "Saved coordinate payload differs from the current character payload (current=" +
+                        currentPayloadHash + ", saved=" + verificationPayloadHash + ").");
+                }
+                string expectedThumbnailHash = GetMainGameBytesHash(thumbnailBytes);
+                string verificationThumbnailHash =
+                    GetMainGameBytesHash(ReadPngImageBytes(temporaryPath));
+                if (!string.Equals(
+                        expectedThumbnailHash,
+                        verificationThumbnailHash,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        "Saved thumbnail differs from the requested thumbnail (expected=" +
+                        expectedThumbnailHash + ", saved=" + verificationThumbnailHash + ").");
+                }
+                StudioCharaEditor.Logger.LogInfo(
+                    "[Coordinate overwrite " + operationId + "] Temporary replacement verified: bytes=" +
+                    new FileInfo(temporaryPath).Length + ", fileSha256=" +
+                    GetMainGameFileHash(temporaryPath) + ", payload=" +
+                    verificationPayloadHash + ", thumbnail=" +
+                    verificationThumbnailHash + ", items=" +
+                    DescribeMainGameCoordinateItems(verification) +
+                    ", MaterialEditor={" + verificationMaterialEditorData + "}.");
+
+                File.Copy(target, rollbackPath, true);
+                StudioCharaEditor.Logger.LogInfo(
+                    "[Coordinate overwrite " + operationId + "] Rollback copy created at '" +
+                    rollbackPath + "'.");
+                SendMainGameFileToRecycleBin(target);
+                if (File.Exists(target))
+                {
+                    throw new IOException(
+                        "The original coordinate still exists after the Recycle Bin operation.");
+                }
+                originalRecycled = true;
+                StudioCharaEditor.Logger.LogInfo(
+                    "[Coordinate overwrite " + operationId + "] Original card sent to Windows Recycle Bin: '" +
+                    target + "'.");
+                File.Move(temporaryPath, target);
+                temporaryPath = null;
+                StudioCharaEditor.Logger.LogInfo(
+                    "[Coordinate overwrite " + operationId + "] Replacement moved into the original path: '" +
+                    target + "'.");
+
+                ChaFileCoordinate finalVerification = new ChaFileCoordinate();
+                if (!finalVerification.LoadFile(target))
+                {
+                    throw new InvalidDataException(
+                        "The final replacement coordinate could not be read back.");
+                }
+                string finalPayloadHash =
+                    GetMainGameCoordinatePayloadHash(finalVerification);
+                string finalThumbnailHash =
+                    GetMainGameBytesHash(ReadPngImageBytes(target));
+                string finalMaterialEditorData =
+                    DescribeMainGameMaterialEditorData(finalVerification);
+                if (!string.Equals(currentPayloadHash, finalPayloadHash, StringComparison.Ordinal) ||
+                    !string.Equals(expectedThumbnailHash, finalThumbnailHash, StringComparison.Ordinal) ||
+                    !string.Equals(
+                        verificationMaterialEditorData,
+                        finalMaterialEditorData,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        "Final verification failed (payload=" + finalPayloadHash +
+                        ", thumbnail=" + finalThumbnailHash +
+                        ", MaterialEditor={" + finalMaterialEditorData + "}).");
+                }
+                StudioCharaEditor.Logger.LogInfo(
+                    "[Coordinate overwrite " + operationId + "] SUCCESS finalBytes=" +
+                    new FileInfo(target).Length + ", finalFileSha256=" +
+                    GetMainGameFileHash(target) + ", payload=" + finalPayloadHash +
+                    ", thumbnail=" + finalThumbnailHash +
+                    ", MaterialEditor={" + finalMaterialEditorData + "}.");
+
+                File.Delete(rollbackPath);
+                rollbackPath = null;
+
+                mainGameSelectedCoordinateCardPath = target;
+                mainGameCoordinateCardsNeedRefresh = true;
+                EnsureMainGameCoordinateCards();
+                mainGameCoordinateCardStatus = "Saved: " + cardName;
+            }
+            catch (Exception ex)
+            {
+                string target = card?.Path;
+                if (originalRecycled &&
+                    !string.IsNullOrEmpty(rollbackPath) &&
+                    File.Exists(rollbackPath) &&
+                    !string.IsNullOrEmpty(target))
+                {
+                    try
+                    {
+                        if (File.Exists(target))
+                        {
+                            File.Delete(target);
+                        }
+                        File.Move(rollbackPath, target);
+                        rollbackPath = null;
+                        StudioCharaEditor.Logger.LogWarning(
+                            "[Coordinate overwrite " + operationId +
+                            "] Replacement failed after recycling; original file was restored to '" +
+                            target + "'.");
+                    }
+                    catch (Exception restoreException)
+                    {
+                        preserveRollback = true;
+                        StudioCharaEditor.Logger.LogError(
+                            "[Coordinate overwrite " + operationId +
+                            "] CRITICAL: original restore failed. Rollback remains at '" +
+                            rollbackPath + "': " + restoreException);
+                    }
+                }
+                mainGameCoordinateCardStatus = "Could not overwrite " + cardName + ". See LogOutput.log.";
+                StudioCharaEditor.Logger.LogError(
+                    "[Coordinate overwrite " + operationId + "] FAILED target='" +
+                    card.Path + "': " + ex);
+            }
+            finally
+            {
+                currentCoordinate.pngData = originalThumbnail;
+                currentCoordinate.coordinateName = originalName;
+                if (!string.IsNullOrEmpty(temporaryPath) && File.Exists(temporaryPath))
+                {
+                    try
+                    {
+                        File.Delete(temporaryPath);
+                    }
+                    catch
+                    {
+                    }
+                }
+                if (!preserveRollback &&
+                    !string.IsNullOrEmpty(rollbackPath) &&
+                    File.Exists(rollbackPath))
+                {
+                    try
+                    {
+                        File.Delete(rollbackPath);
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        StudioCharaEditor.Logger.LogWarning(
+                            "[Coordinate overwrite " + operationId +
+                            "] Could not delete rollback copy '" + rollbackPath + "': " +
+                            cleanupException.Message);
+                    }
+                }
+                mainGameCoordinateOverwriteCard = null;
+            }
+        }
+
+        private static string GetMainGameCoordinatePayloadHash(
+            ChaFileCoordinate coordinate)
+        {
+            return coordinate == null
+                ? "null"
+                : GetMainGameBytesHash(coordinate.SaveBytes());
+        }
+
+        private static void SendMainGameFileToRecycleBin(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                throw new FileNotFoundException(
+                    "The coordinate selected for recycling no longer exists.",
+                    path);
+            }
+
+            MainGameShellFileOperation operation =
+                new MainGameShellFileOperation
+                {
+                    Function = MainGameShellDelete,
+                    Source = Path.GetFullPath(path) + "\0\0",
+                    Flags = (ushort)(MainGameShellSilent |
+                                     MainGameShellNoConfirmation |
+                                     MainGameShellAllowUndo |
+                                     MainGameShellNoErrorUi)
+                };
+            int result = SHFileOperation(ref operation);
+            if (result != 0 || operation.AnyOperationsAborted)
+            {
+                throw new IOException(
+                    "Windows Recycle Bin operation failed (result=" + result +
+                    ", aborted=" + operation.AnyOperationsAborted + ").");
+            }
+        }
+
+        private static void SaveMainGameCoordinateWithPluginData(
+            ChaControl character,
+            ChaFileCoordinate coordinate,
+            string path,
+            int language)
+        {
+            if (character == null || coordinate == null)
+            {
+                throw new InvalidOperationException(
+                    "Cannot save coordinate plug-in data without a character and coordinate.");
+            }
+            if (!CharaEditorMgr.SetCustomBase(character))
+            {
+                throw new InvalidOperationException(
+                    "Could not bind KKAPI CustomBase to the selected character.");
+            }
+            if (!CharaEditorMgr.SetMakerApiInsideMaker(true))
+            {
+                throw new InvalidOperationException(
+                    "Could not enable the temporary KKAPI Maker save context.");
+            }
+
+            try
+            {
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate save: KKAPI Maker context bound to '" +
+                    character.chaFile?.parameter?.fullname + "'.");
+                CaptureMainGameMaterialEditorCoordinateData(character, coordinate);
+                coordinate.SaveFile(path, language);
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate save: plug-in data callback completed; Material Editor=" +
+                    DescribeMainGameMaterialEditorData(coordinate) + ".");
+            }
+            finally
+            {
+                CharaEditorMgr.SetMakerApiInsideMaker(false);
+            }
+        }
+
+        private static void CaptureMainGameMaterialEditorCoordinateData(
+            ChaControl character,
+            ChaFileCoordinate coordinate)
+        {
+            Type controllerType = FindLoadedType(
+                "KK_Plugins.MaterialEditor.MaterialEditorCharaController");
+            Component controller = controllerType == null
+                ? null
+                : character.GetComponent(controllerType);
+            if (controller == null)
+            {
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate save: Material Editor character controller was not found.");
+                return;
+            }
+
+            string listSummary = DescribeMainGameMaterialEditorController(controller);
+            MethodInfo saveMethod = controllerType.GetMethod(
+                "OnCoordinateBeingSaved",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null,
+                new[] { typeof(ChaFileCoordinate) },
+                null);
+            if (saveMethod == null)
+            {
+                StudioCharaEditor.Logger.LogWarning(
+                    "Coordinate save: Material Editor OnCoordinateBeingSaved method was not found; " +
+                    "controller data={" + listSummary + "}.");
+                return;
+            }
+
+            try
+            {
+                // ME Studio writes clothing edits to its character controller.
+                // Invoke its coordinate serializer directly so saving does not
+                // depend on KKAPI believing that Studio is the character maker.
+                saveMethod.Invoke(controller, new object[] { coordinate });
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate save: Material Editor data captured directly; controller={" +
+                    listSummary + "}, coordinate={" +
+                    DescribeMainGameMaterialEditorData(coordinate) + "}.");
+            }
+            catch (Exception exception)
+            {
+                Exception actual = exception.InnerException ?? exception;
+                throw new InvalidOperationException(
+                    "Material Editor coordinate data capture failed. Controller={" +
+                    listSummary + "}.",
+                    actual);
+            }
+        }
+
+        private static string DescribeMainGameMaterialEditorController(
+            Component controller)
+        {
+            string[] listNames =
+            {
+                "RendererPropertyList",
+                "ProjectorPropertyList",
+                "MaterialNamePropertyList",
+                "MaterialFloatPropertyList",
+                "MaterialKeywordPropertyList",
+                "MaterialColorPropertyList",
+                "MaterialTexturePropertyList",
+                "MaterialShaderList",
+                "MaterialCopyList"
+            };
+            List<string> counts = new List<string>(listNames.Length);
+            Type type = controller.GetType();
+            for (int index = 0; index < listNames.Length; index++)
+            {
+                FieldInfo field = type.GetField(
+                    listNames[index],
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                object value = field?.GetValue(controller);
+                PropertyInfo countProperty = value?.GetType().GetProperty("Count");
+                object count = countProperty?.GetValue(value, null);
+                counts.Add(listNames[index] + "=" + (count ?? "missing"));
+            }
+            return string.Join(", ", counts.ToArray());
+        }
+
+        private static string DescribeMainGameMaterialEditorData(
+            ChaFileCoordinate coordinate)
+        {
+            try
+            {
+                PluginData data = ExtendedSave.GetExtendedDataById(
+                    coordinate,
+                    MainGameMaterialEditorExtendedDataId);
+                if (data?.data == null || data.data.Count == 0)
+                {
+                    return "none";
+                }
+
+                string[] entries = data.data
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .Select(pair =>
+                    {
+                        byte[] bytes = pair.Value as byte[];
+                        return pair.Key + "=" +
+                               (bytes == null
+                                   ? pair.Value?.GetType().Name ?? "null"
+                                   : bytes.Length + " bytes");
+                    })
+                    .ToArray();
+                return string.Join(", ", entries);
+            }
+            catch (Exception exception)
+            {
+                return "unavailable (" + exception.Message + ")";
+            }
+        }
+
+        private static string GetMainGameBytesHash(byte[] bytes)
+        {
+            if (bytes == null)
+            {
+                return "null";
+            }
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                return BitConverter.ToString(sha256.ComputeHash(bytes))
+                    .Replace("-", string.Empty);
+            }
+        }
+
+        private static string GetMainGameFileHash(string path)
+        {
+            using (FileStream stream = new FileStream(
+                       path,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite))
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                return BitConverter.ToString(sha256.ComputeHash(stream))
+                    .Replace("-", string.Empty);
+            }
+        }
+
+        private static string DescribeMainGameCoordinateItems(
+            ChaFileCoordinate coordinate)
+        {
+            string clothes = coordinate?.clothes?.parts == null
+                ? "null"
+                : string.Join(",", coordinate.clothes.parts.Select(part => part?.id.ToString() ?? "null").ToArray());
+            string accessories = coordinate?.accessory?.parts == null
+                ? "null"
+                : string.Join(",", coordinate.accessory.parts.Select(part => part?.id.ToString() ?? "null").ToArray());
+            return "clothes=[" + clothes + "], accessories=[" + accessories + "]";
+        }
+
+        private static byte[] ReadPngImageBytes(string path)
+        {
+            using (FileStream stream = new FileStream(
+                       path,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite))
+            using (BinaryReader reader = new BinaryReader(stream))
+            using (MemoryStream png = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(png))
+            {
+                byte[] signature = reader.ReadBytes(8);
+                if (signature.Length != 8 ||
+                    signature[0] != 0x89 || signature[1] != 0x50 ||
+                    signature[2] != 0x4E || signature[3] != 0x47)
+                {
+                    throw new InvalidDataException("The coordinate thumbnail is not a PNG image.");
+                }
+                writer.Write(signature);
+                for (;;)
+                {
+                    byte[] lengthBytes = reader.ReadBytes(4);
+                    byte[] typeBytes = reader.ReadBytes(4);
+                    if (lengthBytes.Length != 4 || typeBytes.Length != 4)
+                    {
+                        throw new EndOfStreamException("The coordinate PNG is incomplete.");
+                    }
+                    int length = (lengthBytes[0] << 24) |
+                                 (lengthBytes[1] << 16) |
+                                 (lengthBytes[2] << 8) |
+                                 lengthBytes[3];
+                    if (length < 0 || length > 64 * 1024 * 1024)
+                    {
+                        throw new InvalidDataException("The coordinate PNG contains an invalid chunk.");
+                    }
+                    byte[] data = reader.ReadBytes(length);
+                    byte[] crc = reader.ReadBytes(4);
+                    if (data.Length != length || crc.Length != 4)
+                    {
+                        throw new EndOfStreamException("The coordinate PNG is incomplete.");
+                    }
+                    writer.Write(lengthBytes);
+                    writer.Write(typeBytes);
+                    writer.Write(data);
+                    writer.Write(crc);
+                    if (typeBytes[0] == (byte)'I' && typeBytes[1] == (byte)'E' &&
+                        typeBytes[2] == (byte)'N' && typeBytes[3] == (byte)'D')
+                    {
+                        return png.ToArray();
+                    }
+                }
+            }
+        }
+
         private void DrawMainGameCoordinateFolderPanel()
         {
             if (mainGameCoordinateFolderRoot == null)
@@ -2873,7 +4162,7 @@ namespace StudioCharaEditor
 
             GUILayout.BeginVertical(GUI.skin.box, GUILayout.Height(166f));
             GUILayout.Label(
-                "Select clothes folder",
+                LC("Select clothes folder"),
                 GetMainGameAuxiliaryLabelStyle(),
                 GUILayout.Height(24f));
             mainGameCoordinateFolderScroll = GUILayout.BeginScrollView(
@@ -3176,7 +4465,15 @@ namespace StudioCharaEditor
                         }
                     }
                     GUI.Label(labelRect, card.Name, labelStyle);
-                    if (GUI.Button(cellRect, GUIContent.none, GUIStyle.none))
+                    if (ConsumeSelectorRightClick(cellRect))
+                    {
+                        mainGameSelectedCoordinateCard = index;
+                        mainGameSelectedCoordinateCardPath = card.Path;
+                        mainGameCoordinateDeleteConfirmation = -1;
+                        mainGameCoordinateCardStatus = string.Empty;
+                        OpenMainGameCoordinateContextMenu(card);
+                    }
+                    else if (GUI.Button(cellRect, GUIContent.none, GUIStyle.none))
                     {
                         mainGameSelectedCoordinateCard = index;
                         mainGameSelectedCoordinateCardPath = card.Path;
@@ -3278,6 +4575,296 @@ namespace StudioCharaEditor
                 mainGameCoordinateCardStatus = "Could not read coordinate cards.";
                 StudioCharaEditor.Logger.LogWarning(
                     "Coordinate card list failed: " + GetMainGameInnermostExceptionMessage(ex));
+            }
+        }
+
+        private void OpenMainGameCoordinateContextMenu(MainGameCoordinateCard card)
+        {
+            if (card == null)
+            {
+                return;
+            }
+
+            mainGameCoordinateContextScreenPosition =
+                GetMainGameCursorGuiPosition();
+            mainGameCoordinateContextPositionPending = true;
+            mainGameCoordinateContextCard = card;
+            mainGameCoordinateRenameInput = card.Name ?? string.Empty;
+            mainGameCoordinateRenameMode = false;
+            mainGameCoordinateContextMenuOpen = true;
+            mainGameCoordinateContextMenuRect = new Rect(
+                0f,
+                0f,
+                210f,
+                76f);
+        }
+
+        private void DrawMainGameCoordinateContextMenuOverlay()
+        {
+            if (!mainGameCoordinateContextMenuOpen ||
+                mainGameCoordinateContextCard == null)
+            {
+                return;
+            }
+
+            if (mainGameCoordinateContextPositionPending)
+            {
+                Vector2 guiPoint = mainGameCoordinateContextScreenPosition;
+                mainGameCoordinateContextMenuRect.position = new Vector2(
+                    guiPoint.x + 8f,
+                    guiPoint.y + 8f);
+                mainGameCoordinateContextPositionPending = false;
+                ClampMainGamePanelRects();
+            }
+
+            Event evt = Event.current;
+            if (evt.type == EventType.KeyDown && evt.keyCode == KeyCode.Escape)
+            {
+                CloseMainGameCoordinateContextMenu();
+                evt.Use();
+                return;
+            }
+            if (evt.type == EventType.MouseDown &&
+                !mainGameCoordinateContextMenuRect.Contains(evt.mousePosition))
+            {
+                CloseMainGameCoordinateContextMenu();
+                evt.Use();
+                return;
+            }
+
+            mainGameCoordinateContextMenuRect = DrawMainGameOpaqueContextMenuWindow(
+                MainGameCoordinateContextMenuWindowId,
+                mainGameCoordinateContextMenuRect,
+                DrawMainGameCoordinateContextMenuWindow);
+        }
+
+        private void DrawMainGameCoordinateContextMenuWindow(int windowId)
+        {
+            if (mainGameCoordinateContextCard == null)
+            {
+                CloseMainGameCoordinateContextMenu();
+                return;
+            }
+
+
+            DrawMainGameContextMenuBackground(
+                mainGameCoordinateContextMenuRect.width,
+                mainGameCoordinateContextMenuRect.height);
+
+            if (!mainGameCoordinateRenameMode)
+            {
+                GUILayout.Space(4f);
+                if (GUILayout.Button(
+                        LC("Rename"),
+                        GetSelectorContextMenuButtonStyle(),
+                        GUILayout.Height(36f)))
+                {
+                    mainGameCoordinateRenameMode = true;
+                    mainGameCoordinateRenameInput =
+                        mainGameCoordinateContextCard.Name ?? string.Empty;
+                    mainGameCoordinateContextMenuRect.width = 360f;
+                    mainGameCoordinateContextMenuRect.height = 152f;
+                    GUI.FocusControl("MainGameCoordinateRenameField");
+                }
+            }
+            else
+            {
+                GUILayout.Label(LC("Rename"), GetMainGameAuxiliaryLabelStyle());
+                GUI.SetNextControlName("MainGameCoordinateRenameField");
+                mainGameCoordinateRenameInput = GUILayout.TextField(
+                    mainGameCoordinateRenameInput ?? string.Empty,
+                    128,
+                    GUILayout.Height(34f));
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button(
+                        LC("Rename"),
+                        GetSelectorContextMenuButtonStyle(),
+                        GUILayout.Height(34f)))
+                {
+                    QueueMainGameCoordinateRename();
+                }
+                if (GUILayout.Button(
+                        LC("Cancel"),
+                        GetSelectorContextMenuButtonStyle(),
+                        GUILayout.Height(34f)))
+                {
+                    CloseMainGameCoordinateContextMenu();
+                }
+                GUILayout.EndHorizontal();
+
+                Event evt = Event.current;
+                if (evt.type == EventType.KeyDown &&
+                    (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter))
+                {
+                    QueueMainGameCoordinateRename();
+                    evt.Use();
+                }
+            }
+
+        }
+
+        private void QueueMainGameCoordinateRename()
+        {
+            MainGameCoordinateCard card = mainGameCoordinateContextCard;
+            string requestedName = (mainGameCoordinateRenameInput ?? string.Empty).Trim();
+            if (card == null || string.IsNullOrEmpty(requestedName))
+            {
+                mainGameCoordinateCardStatus = LC("Name cannot be empty.");
+                return;
+            }
+
+            CloseMainGameCoordinateContextMenu();
+            QueueMainGameCoordinateAction(() =>
+                RenameMainGameCoordinateCard(card, requestedName));
+        }
+
+        private void CloseMainGameCoordinateContextMenu()
+        {
+            mainGameCoordinateContextMenuOpen = false;
+            mainGameCoordinateRenameMode = false;
+            mainGameCoordinateContextCard = null;
+            mainGameCoordinateRenameInput = string.Empty;
+            mainGameCoordinateContextPositionPending = false;
+        }
+
+        private void RenameMainGameCoordinateCard(
+            MainGameCoordinateCard card,
+            string requestedName)
+        {
+            string temporaryPath = null;
+            string rollbackPath = null;
+            try
+            {
+                if (card == null || string.IsNullOrWhiteSpace(requestedName))
+                {
+                    throw new InvalidOperationException("A coordinate card and non-empty name are required.");
+                }
+
+                string root = Path.GetFullPath(GetMainGameCoordinateDirectory())
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+                    Path.DirectorySeparatorChar;
+                string target = Path.GetFullPath(card.Path);
+                if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
+                    !File.Exists(target))
+                {
+                    throw new InvalidOperationException(
+                        "The selected card is outside the coordinate folder or no longer exists.");
+                }
+
+                byte[] original = File.ReadAllBytes(target);
+                byte[] renamed = RewriteMainGameCoordinateDisplayName(
+                    original,
+                    requestedName.Trim());
+                string directory = Path.GetDirectoryName(target);
+                temporaryPath = Path.Combine(
+                    directory,
+                    ".StudioCharaEditor-rename-" + Guid.NewGuid().ToString("N") + ".png");
+                rollbackPath = temporaryPath + ".original";
+                File.WriteAllBytes(temporaryPath, renamed);
+
+                string temporaryName = TryReadMainGameCoordinateDisplayName(temporaryPath);
+                ChaFileCoordinate verification = new ChaFileCoordinate();
+                if (!string.Equals(temporaryName, requestedName.Trim(), StringComparison.Ordinal) ||
+                    !verification.LoadFile(temporaryPath))
+                {
+                    throw new InvalidDataException("The renamed coordinate card failed verification.");
+                }
+
+                File.Replace(temporaryPath, target, rollbackPath, true);
+                temporaryPath = null;
+                string finalName = TryReadMainGameCoordinateDisplayName(target);
+                if (!string.Equals(finalName, requestedName.Trim(), StringComparison.Ordinal))
+                {
+                    File.Replace(rollbackPath, target, null, true);
+                    rollbackPath = null;
+                    throw new InvalidDataException("The final coordinate name failed verification.");
+                }
+
+                File.Delete(rollbackPath);
+                rollbackPath = null;
+                mainGameSelectedCoordinateCardPath = target;
+                mainGameCoordinateCardsNeedRefresh = true;
+                mainGameCoordinateFilterDirty = true;
+                EnsureMainGameCoordinateCards();
+                mainGameCoordinateCardStatus = LC("Renamed") + ": " + requestedName.Trim();
+                StudioCharaEditor.Logger.LogInfo(
+                    "Coordinate card renamed in place: '" + target + "' -> '" +
+                    requestedName.Trim() + "'.");
+            }
+            catch (Exception exception)
+            {
+                mainGameCoordinateCardStatus = LC("Could not rename") + " " +
+                                               (card?.Name ?? LC("coordinate")) + ".";
+                StudioCharaEditor.Logger.LogError(
+                    "Coordinate card rename failed for '" + card?.Path + "': " + exception);
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(temporaryPath) && File.Exists(temporaryPath))
+                {
+                    try
+                    {
+                        File.Delete(temporaryPath);
+                    }
+                    catch
+                    {
+                    }
+                }
+                if (!string.IsNullOrEmpty(rollbackPath) && File.Exists(rollbackPath))
+                {
+                    try
+                    {
+                        File.Delete(rollbackPath);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+
+        private static byte[] RewriteMainGameCoordinateDisplayName(
+            byte[] original,
+            string requestedName)
+        {
+            if (original == null || original.Length == 0)
+            {
+                throw new InvalidDataException("The coordinate card is empty.");
+            }
+
+            using (MemoryStream input = new MemoryStream(original, false))
+            using (BinaryReader reader = new BinaryReader(input))
+            {
+                PngFile.SkipPng(reader);
+                long headerOffset = input.Position;
+                int productNumber = reader.ReadInt32();
+                string marker = reader.ReadString();
+                string version = reader.ReadString();
+                int language = reader.ReadInt32();
+                reader.ReadString();
+                long payloadOffset = input.Position;
+                if (productNumber > 100 ||
+                    !string.Equals(marker, "【AIS_Clothes】", StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The selected file is not an HS2 coordinate card.");
+                }
+
+                using (MemoryStream output = new MemoryStream(original.Length + requestedName.Length * 2))
+                using (BinaryWriter writer = new BinaryWriter(output))
+                {
+                    writer.Write(original, 0, checked((int)headerOffset));
+                    writer.Write(productNumber);
+                    writer.Write(marker);
+                    writer.Write(version);
+                    writer.Write(language);
+                    writer.Write(requestedName);
+                    writer.Write(
+                        original,
+                        checked((int)payloadOffset),
+                        checked(original.Length - (int)payloadOffset));
+                    writer.Flush();
+                    return output.ToArray();
+                }
             }
         }
 
@@ -3592,9 +5179,10 @@ namespace StudioCharaEditor
 
         private IEnumerator RunMainGameCoordinateAction(Action action)
         {
-            // Applying a coordinate invokes game and plug-in callbacks. It must
-            // begin after the IMGUI event has completely finished.
-            yield return null;
+            // Coordinate saves that capture a thumbnail must run after the
+            // current frame has rendered. This also keeps load/save callbacks
+            // outside the IMGUI event that queued them.
+            yield return new WaitForEndOfFrame();
             try
             {
                 action();
@@ -4608,13 +6196,39 @@ namespace StudioCharaEditor
 
         private void DrawMainGameWindowTitle(string title, int fontSize, float windowWidth)
         {
-            GUIStyle style = new GUIStyle(theme.MainGameTitleStyle)
+            title = LC(title);
+            GUIStyle style;
+            if (fontSize == 20)
+            {
+                if (mainGameWindowTitle20Style == null)
+                {
+                    mainGameWindowTitle20Style = CreateMainGameWindowTitleStyle(20);
+                }
+                style = mainGameWindowTitle20Style;
+            }
+            else if (fontSize == 24)
+            {
+                if (mainGameWindowTitle24Style == null)
+                {
+                    mainGameWindowTitle24Style = CreateMainGameWindowTitleStyle(24);
+                }
+                style = mainGameWindowTitle24Style;
+            }
+            else
+            {
+                style = CreateMainGameWindowTitleStyle(fontSize);
+            }
+            GUI.Label(new Rect(16f, 7f, Math.Max(0f, windowWidth - 66f), 42f), title, style);
+        }
+
+        private GUIStyle CreateMainGameWindowTitleStyle(int fontSize)
+        {
+            return new GUIStyle(theme.MainGameTitleStyle)
             {
                 fontSize = fontSize,
                 alignment = TextAnchor.MiddleLeft,
                 clipping = TextClipping.Clip
             };
-            GUI.Label(new Rect(16f, 7f, Math.Max(0f, windowWidth - 66f), 42f), title, style);
         }
 
         private void DrawMainGamePluginSettings()
@@ -5128,7 +6742,7 @@ namespace StudioCharaEditor
         private bool DrawMainGameFullWidthButton(string label)
         {
             Rect rect = GetMainGameRightRowRect(40f);
-            return GUI.Button(rect, label);
+            return GUI.Button(rect, LC(label));
         }
 
         private static GameObject GetMainGameMaterialEditorTarget(
@@ -5730,7 +7344,9 @@ namespace StudioCharaEditor
         private void EnsureMainGameSliderStyleCache()
         {
             if (mainGameSliderStyleTheme == theme &&
-                mainGameSliderLabelStyle != null)
+                mainGameSliderLabelStyle != null &&
+                mainGameSliderValueStyle != null &&
+                mainGameSliderPreciseValueStyle != null)
             {
                 return;
             }
@@ -5749,15 +7365,15 @@ namespace StudioCharaEditor
             mainGameSliderAccentLabelStyle.active.textColor = accent;
             mainGameSliderAccentLabelStyle.focused.textColor = accent;
 
-            mainGameSliderValueStyle = new GUIStyle(theme.MainGameNumericValueStyle)
+            mainGameSliderValueStyle = new GUIStyle(GetMainGameAuxiliaryValueStyle())
             {
                 alignment = TextAnchor.MiddleCenter,
                 fontSize = 22,
-                fixedHeight = 42f
+                fixedHeight = 0f
             };
             mainGameSliderPreciseValueStyle = new GUIStyle(mainGameSliderValueStyle)
             {
-                fontSize = 17
+                fontSize = 19
             };
             mainGameResetButtonStyle = new GUIStyle(theme.MainGameIconButtonStyle)
             {
@@ -5769,22 +7385,40 @@ namespace StudioCharaEditor
             mainGameResetButtonStyle.active.background = theme.MainGameExitSelectedTexture;
         }
 
-        private static void DrawMainGameFittedLabel(
+        private void DrawMainGameFittedLabel(
             Rect rect,
             string text,
             GUIStyle sourceStyle,
             int minimumFontSize = 15)
         {
-            GUIStyle style = new GUIStyle(sourceStyle ?? GUI.skin.label)
+            sourceStyle = sourceStyle ?? GUI.skin.label;
+            mainGameScratchContent.text = text ?? string.Empty;
+            mainGameScratchContent.tooltip = string.Empty;
+            GUIContent content = mainGameScratchContent;
+            if (sourceStyle.CalcSize(content).x <= rect.width - 4f)
             {
-                clipping = TextClipping.Clip
-            };
-            GUIContent content = new GUIContent(text ?? string.Empty);
-            int fontSize = style.fontSize > 0 ? style.fontSize : GUI.skin.label.fontSize;
-            while (fontSize > minimumFontSize && style.CalcSize(content).x > rect.width - 4f)
+                GUI.Label(rect, content, sourceStyle);
+                return;
+            }
+
+            if (!mainGameFittedLabelStyles.TryGetValue(
+                    sourceStyle,
+                    out GUIStyle style))
             {
-                fontSize--;
-                style.fontSize = fontSize;
+                style = new GUIStyle(sourceStyle)
+                {
+                    clipping = TextClipping.Clip
+                };
+                mainGameFittedLabelStyles[sourceStyle] = style;
+            }
+            int fontSize = sourceStyle.fontSize > 0
+                ? sourceStyle.fontSize
+                : GUI.skin.label.fontSize;
+            style.fontSize = fontSize;
+            while (fontSize > minimumFontSize &&
+                   style.CalcSize(content).x > rect.width - 4f)
+            {
+                style.fontSize = --fontSize;
             }
             GUI.Label(rect, content, style);
         }
@@ -5940,12 +7574,11 @@ namespace StudioCharaEditor
                 Math.Max(44f, resetRect.x - labelRect.xMax - 12f),
                 38f);
             DrawMainGameFittedLabel(labelRect, LC(name), GUI.skin.label);
-            string enteredText = GUI.TextField(fieldRect, valueText);
-            if (!string.Equals(enteredText, valueText, StringComparison.Ordinal) &&
-                float.TryParse(
-                    enteredText.Replace(',', '.'),
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
+            if (DrawMainGameEditableFloatField(
+                    fieldRect,
+                    "ValueInput|" + detail.DetailDefine.Key,
+                    oldValue,
+                    precise ? "F5" : "F3",
                     out float parsedValue))
             {
                 newValue = parsedValue;
@@ -6150,6 +7783,80 @@ namespace StudioCharaEditor
             return selectedIndex;
         }
 
+        private bool DrawMainGameEditableFloatField(
+            Rect rect,
+            string inputKey,
+            float displayedValue,
+            string format,
+            out float parsedValue)
+        {
+            inputKey = inputKey ?? string.Empty;
+            string controlName = "StudioCharaEditor.MainGameNumeric." + inputKey;
+            bool focused = string.Equals(
+                mainGameActiveNumericControlName,
+                controlName,
+                StringComparison.Ordinal) &&
+                           GUIUtility.keyboardControl == GetMainGameNumericControlId(controlName);
+            if (!mainGameNumericValueInputs.TryGetValue(inputKey, out string input) || !focused)
+            {
+                input = displayedValue.ToString(format, CultureInfo.InvariantCulture);
+            }
+
+            string nextInput = DrawMainGameSharedNumericTextField(
+                rect,
+                controlName,
+                input,
+                GetMainGameAuxiliaryValueStyle());
+            mainGameNumericValueInputs[inputKey] = nextInput;
+
+            bool parsed = float.TryParse(
+                (nextInput ?? string.Empty).Replace(',', '.'),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out parsedValue);
+            return !string.Equals(nextInput, input, StringComparison.Ordinal) &&
+                   parsed &&
+                   !Mathf.Approximately(parsedValue, displayedValue);
+        }
+
+        private bool DrawMainGameEditableFloatField(
+            float width,
+            float height,
+            string inputKey,
+            float displayedValue,
+            string format,
+            GUIStyle style,
+            out float parsedValue)
+        {
+            inputKey = inputKey ?? string.Empty;
+            string controlName = "StudioCharaEditor.MainGameNumeric." + inputKey;
+            bool focused = string.Equals(
+                mainGameActiveNumericControlName,
+                controlName,
+                StringComparison.Ordinal) &&
+                           GUIUtility.keyboardControl == GetMainGameNumericControlId(controlName);
+            if (!mainGameNumericValueInputs.TryGetValue(inputKey, out string input) || !focused)
+            {
+                input = displayedValue.ToString(format, CultureInfo.InvariantCulture);
+            }
+
+            string nextInput = DrawMainGameSharedNumericTextField(
+                controlName,
+                input,
+                style ?? mainGameSliderValueStyle ?? GetMainGameAuxiliaryValueStyle(),
+                GUILayout.Width(width),
+                GUILayout.Height(height));
+            mainGameNumericValueInputs[inputKey] = nextInput;
+            bool parsed = float.TryParse(
+                (nextInput ?? string.Empty).Replace(',', '.'),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out parsedValue);
+            return !string.Equals(nextInput, input, StringComparison.Ordinal) &&
+                   parsed &&
+                   !Mathf.Approximately(parsedValue, displayedValue);
+        }
+
         private float DrawMainGameRawSliderRow(
             string name,
             float oldValue,
@@ -6172,54 +7879,77 @@ namespace StudioCharaEditor
                 : displayPercent
                     ? string.Format(CultureInfo.InvariantCulture, "{0:F0}", oldValue * 100f)
                     : oldValue.ToString("0.###", CultureInfo.InvariantCulture);
-            Rect rowRect = GetMainGameRightRowRect(44f);
-            float gap = Mathf.Clamp(rowRect.width * 0.012f, 3f, 6f);
-            float resetWidth = Mathf.Clamp(rowRect.width * 0.105f, 34f, 43f);
+            float rowWidth = Math.Max(120f, mainGameRightContentWidth);
+            float gap = Mathf.Clamp(rowWidth * 0.012f, 3f, 6f);
+            float resetWidth = Mathf.Clamp(rowWidth * 0.105f, 34f, 43f);
             float inputWidth = precise
-                ? Mathf.Clamp(rowRect.width * 0.18f, 58f, 72f)
-                : Mathf.Clamp(rowRect.width * 0.15f, 48f, 58f);
-            float labelWidth = Mathf.Clamp(rowRect.width * 0.40f, 96f, 190f);
-            float sliderWidth = rowRect.width - labelWidth - inputWidth - resetWidth - gap * 3f;
+                ? Mathf.Clamp(rowWidth * 0.18f, 58f, 72f)
+                : Mathf.Clamp(rowWidth * 0.15f, 48f, 58f);
+            float labelWidth = Mathf.Clamp(rowWidth * 0.40f, 96f, 190f);
+            float sliderWidth = rowWidth - labelWidth - inputWidth - resetWidth - gap * 3f;
             if (sliderWidth < 64f)
             {
                 float reduction = Math.Min(64f - sliderWidth, Math.Max(0f, labelWidth - 76f));
                 labelWidth -= reduction;
                 sliderWidth += reduction;
             }
-            Rect labelRect = new Rect(rowRect.x, rowRect.y, labelWidth, rowRect.height);
-            Rect sliderRect = new Rect(labelRect.xMax + gap, rowRect.y + 16f, Math.Max(40f, sliderWidth), 12f);
-            Rect valueRect = new Rect(sliderRect.xMax + gap, rowRect.y + 1f, inputWidth, 42f);
-            Rect resetRect = new Rect(valueRect.xMax + gap, rowRect.y + 1f, resetWidth, 42f);
             EnsureMainGameSliderStyleCache();
             GUIStyle labelStyle = accentLabel
                 ? mainGameSliderAccentLabelStyle
                 : mainGameSliderLabelStyle;
+            GUILayout.BeginHorizontal(GUILayout.Width(rowWidth), GUILayout.Height(44f));
+            Rect labelRect = GUILayoutUtility.GetRect(
+                labelWidth,
+                44f,
+                GUILayout.Width(labelWidth),
+                GUILayout.Height(44f));
             DrawMainGameFittedLabel(labelRect, LC(name), labelStyle);
+            GUILayout.Space(gap);
+            Rect sliderSlot = GUILayoutUtility.GetRect(
+                Math.Max(40f, sliderWidth),
+                44f,
+                GUILayout.Width(Math.Max(40f, sliderWidth)),
+                GUILayout.Height(44f));
+            Rect sliderRect = new Rect(sliderSlot.x, sliderSlot.y + 16f, sliderSlot.width, 12f);
             newValue = DrawMainGameSliderControl(
                 sliderRect,
                 newValue,
                 minimum,
                 maximum);
-            GUIStyle valueStyle = precise
+            GUILayout.Space(gap);
+            string inputKey = string.Format(
+                CultureInfo.InvariantCulture,
+                "Raw|{0}|{1}|{2}",
+                mainGameUtilityPage,
+                mainGameCurrentRightTitle,
+                name);
+            GUIStyle inputStyle = precise
                 ? mainGameSliderPreciseValueStyle
                 : mainGameSliderValueStyle;
-            string enteredText = GUI.TextField(valueRect, valueText, valueStyle);
-            if (!string.Equals(enteredText, valueText, StringComparison.Ordinal) &&
-                float.TryParse(
-                    enteredText.Replace(',', '.'),
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
+            if (DrawMainGameEditableFloatField(
+                    inputWidth,
+                    42f,
+                    inputKey,
+                    displayPercent ? oldValue * 100f : oldValue,
+                    precise ? "F3" : displayPercent ? "F0" : "0.###",
+                    inputStyle,
                     out float parsedValue))
             {
                 newValue = displayPercent ? parsedValue / 100f : parsedValue;
             }
+            GUILayout.Space(gap);
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && revertValue.HasValue;
-            if (GUI.Button(resetRect, GUIContent.none, CreateMainGameResetButtonStyle()) && revertValue.HasValue)
+            if (GUILayout.Button(
+                    GUIContent.none,
+                    CreateMainGameResetButtonStyle(),
+                    GUILayout.Width(resetWidth),
+                    GUILayout.Height(42f)) && revertValue.HasValue)
             {
                 newValue = revertValue.Value;
             }
             GUI.enabled = oldEnabled;
+            GUILayout.EndHorizontal();
             return unlimited ? newValue : Mathf.Clamp(newValue, minimum, maximum);
         }
 
@@ -6267,6 +7997,23 @@ namespace StudioCharaEditor
                     if (GUIUtility.hotControl == controlId)
                     {
                         GUIUtility.hotControl = 0;
+                        evt.Use();
+                    }
+                    break;
+                case EventType.ScrollWheel:
+                    if (GUI.enabled &&
+                        (StudioCharaEditor.MainGameUseMouseWheelSliders?.Value ?? false) &&
+                        inputRect.Contains(evt.mousePosition) &&
+                        maximum > minimum)
+                    {
+                        float divisions = StudioCharaEditor.PreciseInputMode.Value ? 1000f : 100f;
+                        float step = (maximum - minimum) / divisions;
+                        if (evt.shift)
+                        {
+                            step *= 10f;
+                        }
+                        value = Mathf.Clamp(value - evt.delta.y * step, minimum, maximum);
+                        GUIUtility.keyboardControl = 0;
                         evt.Use();
                     }
                     break;
@@ -6585,19 +8332,16 @@ namespace StudioCharaEditor
 
             EnsureMainGameSliderStyleCache();
             GUIStyle labelStyle = mainGameSliderLabelStyle;
-            GUIStyle valueStyle = precise
-                ? mainGameSliderPreciseValueStyle
-                : mainGameSliderValueStyle;
             GUIStyle resetStyle = mainGameResetButtonStyle;
 
-            Rect rowRect = GetMainGameRightRowRect(44f);
-            float gap = Mathf.Clamp(rowRect.width * 0.012f, 3f, 6f);
-            float resetWidth = Mathf.Clamp(rowRect.width * 0.105f, 34f, 43f);
+            float rowWidth = Math.Max(120f, mainGameRightContentWidth);
+            float gap = Mathf.Clamp(rowWidth * 0.012f, 3f, 6f);
+            float resetWidth = Mathf.Clamp(rowWidth * 0.105f, 34f, 43f);
             float inputWidth = precise
-                ? Mathf.Clamp(rowRect.width * 0.18f, 58f, 72f)
-                : Mathf.Clamp(rowRect.width * 0.15f, 48f, 58f);
-            float labelWidth = Mathf.Clamp(rowRect.width * 0.40f, 96f, 190f);
-            float sliderWidth = rowRect.width - labelWidth - inputWidth - resetWidth - gap * 3f;
+                ? Mathf.Clamp(rowWidth * 0.18f, 58f, 72f)
+                : Mathf.Clamp(rowWidth * 0.15f, 48f, 58f);
+            float labelWidth = Mathf.Clamp(rowWidth * 0.40f, 96f, 190f);
+            float sliderWidth = rowWidth - labelWidth - inputWidth - resetWidth - gap * 3f;
             if (sliderWidth < 64f)
             {
                 float missingWidth = 64f - sliderWidth;
@@ -6606,11 +8350,20 @@ namespace StudioCharaEditor
                 sliderWidth += labelReduction;
             }
 
-            Rect labelRect = new Rect(rowRect.x, rowRect.y, labelWidth, rowRect.height);
-            Rect sliderRect = new Rect(labelRect.xMax + gap, rowRect.y + 16f, Math.Max(40f, sliderWidth), 12f);
-            Rect valueRect = new Rect(sliderRect.xMax + gap, rowRect.y + 1f, inputWidth, 42f);
-            Rect resetRect = new Rect(valueRect.xMax + gap, rowRect.y + 1f, resetWidth, 42f);
+            GUILayout.BeginHorizontal(GUILayout.Width(rowWidth), GUILayout.Height(44f));
+            Rect labelRect = GUILayoutUtility.GetRect(
+                labelWidth,
+                44f,
+                GUILayout.Width(labelWidth),
+                GUILayout.Height(44f));
             DrawMainGameFittedLabel(labelRect, LC(name), labelStyle);
+            GUILayout.Space(gap);
+            Rect sliderSlot = GUILayoutUtility.GetRect(
+                Math.Max(40f, sliderWidth),
+                44f,
+                GUILayout.Width(Math.Max(40f, sliderWidth)),
+                GUILayout.Height(44f));
+            Rect sliderRect = new Rect(sliderSlot.x, sliderSlot.y + 16f, sliderSlot.width, 12f);
             float sliderValue = DrawMainGameSliderControl(
                 sliderRect,
                 newValue,
@@ -6620,23 +8373,35 @@ namespace StudioCharaEditor
             {
                 newValue = sliderValue;
             }
-            string newValueText = GUI.TextField(valueRect, valueText, valueStyle);
-            if (!string.Equals(newValueText, valueText, StringComparison.Ordinal) &&
-                float.TryParse(
-                    newValueText.Replace(',', '.'),
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
+            GUILayout.Space(gap);
+            string sliderInputKey = "Slider|" + detail.DetailDefine.Key;
+            GUIStyle inputStyle = precise
+                ? mainGameSliderPreciseValueStyle
+                : mainGameSliderValueStyle;
+            if (DrawMainGameEditableFloatField(
+                    inputWidth,
+                    42f,
+                    sliderInputKey,
+                    oldValue * 100f,
+                    precise ? "F3" : "F0",
+                    inputStyle,
                     out float parsedValue))
             {
                 newValue = parsedValue / 100f;
             }
+            GUILayout.Space(gap);
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && detail.RevertValue != null;
-            if (GUI.Button(resetRect, GUIContent.none, resetStyle))
+            if (GUILayout.Button(
+                    GUIContent.none,
+                    resetStyle,
+                    GUILayout.Width(resetWidth),
+                    GUILayout.Height(42f)))
             {
                 newValue = (float)detail.RevertValue;
             }
             GUI.enabled = oldEnabled;
+            GUILayout.EndHorizontal();
             GUILayout.Space(2f);
 
             if (!unlimited)
@@ -6673,22 +8438,33 @@ namespace StudioCharaEditor
             float tabWidth = Math.Min(
                 90f,
                 Math.Max(58f, (mainGameRightRect.width - 42f - (tabs.Length * 4f)) / tabs.Length));
-            GUIStyle normalStyle = new GUIStyle(theme.MainGameTabStyle)
+            int tabFontSize = tabs.Length >= 5
+                ? 15
+                : theme.MainGameTabStyle.fontSize;
+            if (mainGameDetailTabNormalStyle == null ||
+                mainGameDetailTabSelectedStyle == null ||
+                !Mathf.Approximately(mainGameDetailTabStyleWidth, tabWidth) ||
+                mainGameDetailTabStyleFontSize != tabFontSize)
             {
-                fixedWidth = tabWidth,
-                fontSize = tabs.Length >= 5 ? 15 : theme.MainGameTabStyle.fontSize
-            };
-            GUIStyle selectedStyle = new GUIStyle(theme.MainGameTabSelectedStyle)
-            {
-                fixedWidth = tabWidth,
-                fontSize = tabs.Length >= 5 ? 15 : theme.MainGameTabSelectedStyle.fontSize
-            };
+                mainGameDetailTabStyleWidth = tabWidth;
+                mainGameDetailTabStyleFontSize = tabFontSize;
+                mainGameDetailTabNormalStyle = new GUIStyle(theme.MainGameTabStyle)
+                {
+                    fixedWidth = tabWidth,
+                    fontSize = tabFontSize
+                };
+                mainGameDetailTabSelectedStyle = new GUIStyle(theme.MainGameTabSelectedStyle)
+                {
+                    fixedWidth = tabWidth,
+                    fontSize = tabFontSize
+                };
+            }
             GUILayout.BeginHorizontal();
             for (int index = 0; index < tabs.Length; index++)
             {
                 GUIStyle style = index == selectedTab
-                    ? selectedStyle
-                    : normalStyle;
+                    ? mainGameDetailTabSelectedStyle
+                    : mainGameDetailTabNormalStyle;
                 if (GUILayout.Button(GetMainGameTabLabel(detailSetKey, tabs[index]), style))
                 {
                     selectedTab = index;
@@ -6708,6 +8484,20 @@ namespace StudioCharaEditor
             string detailSetKey,
             CharaDetailInfo[] detailSet)
         {
+            int dynamicSignature = detailSetKey.StartsWith(
+                "Hair#",
+                StringComparison.Ordinal)
+                ? GetMainGameHairTabSignature(controller, detailSetKey)
+                : 0;
+            if (mainGameTabsCache.TryGetValue(
+                    detailSetKey,
+                    out MainGameTabsCacheEntry cached) &&
+                ReferenceEquals(cached.DetailSet, detailSet) &&
+                cached.DynamicSignature == dynamicSignature)
+            {
+                return cached.Tabs;
+            }
+
             string[] candidates;
             if (detailSetKey.StartsWith("Hair#", StringComparison.Ordinal))
             {
@@ -6715,18 +8505,18 @@ namespace StudioCharaEditor
             }
             else if (detailSetKey.StartsWith("Clothes#", StringComparison.Ordinal))
             {
-                candidates = new[] { "Type", "Color 01", "Color 02", "Color 03", "Other" };
+                candidates = MainGameClothesTabs;
             }
             else if (detailSetKey.StartsWith("Accessories#", StringComparison.Ordinal))
             {
-                candidates = new[] { "Type", "Accessory Color", "Hair Color", "Base Position", "Settings" };
+                candidates = MainGameAccessoryTabs;
             }
             else
             {
                 switch (detailSetKey)
                 {
                     case "Body#Skin":
-                        candidates = new[] { "Skin", "Build", "Color" };
+                        candidates = MainGameSkinTabs;
                         break;
                     case "Body#Sunburn":
                     case "Body#Nip":
@@ -6737,30 +8527,30 @@ namespace StudioCharaEditor
                     case "Face#MakeupEyeshadow":
                     case "Face#MakeupCheek":
                     case "Face#MakeupLip":
-                        candidates = new[] { "Type", "Color" };
+                        candidates = MainGameTypeColorTabs;
                         break;
                     case "Body#Nail":
-                        candidates = new[] { "Color" };
+                        candidates = MainGameColorTabs;
                         break;
                     case "Body#Paint1":
                     case "Body#Paint2":
                     case "Face#MakeupPaint1":
                     case "Face#MakeupPaint2":
                     case "Face#Mole":
-                        candidates = new[] { "Type", "Color", "Placement" };
+                        candidates = MainGameTypeColorPlacementTabs;
                         break;
                     case "Face#FaceType":
-                        candidates = new[] { "Contour", "Skin", "Wrinkles" };
+                        candidates = MainGameFaceTypeTabs;
                         break;
                     case "Face#EyeL":
                     case "Face#EyeR":
-                        candidates = new[] { "Iris Type", "Iris Settings", "Pupil Type", "Pupil Settings", "Eye Whites" };
+                        candidates = MainGameEyeTabs;
                         break;
                     case "Face#EyeEtc":
-                        candidates = new[] { "Settings" };
+                        candidates = MainGameSettingsTabs;
                         break;
                     case "Face#EyeHL":
-                        candidates = new[] { "Type", "Color", "Settings" };
+                        candidates = MainGameEyeHighlightTabs;
                         break;
                     default:
                         return null;
@@ -6785,7 +8575,14 @@ namespace StudioCharaEditor
                     }
                 }
             }
-            return visibleTabs.ToArray();
+            string[] result = visibleTabs.ToArray();
+            mainGameTabsCache[detailSetKey] = new MainGameTabsCacheEntry
+            {
+                DetailSet = detailSet,
+                DynamicSignature = dynamicSignature,
+                Tabs = result
+            };
+            return result;
         }
 
         private string[] GetMainGameHairTabs(CharaEditorController controller, string detailSetKey)
@@ -6822,14 +8619,63 @@ namespace StudioCharaEditor
             return tabs.ToArray();
         }
 
-        private static string GetMainGameTabLabel(string detailSetKey, string tab)
+        private static int GetMainGameHairTabSignature(
+            CharaEditorController controller,
+            string detailSetKey)
         {
+            ChaControl character = controller?.ociTarget?.charInfo;
+            int hairIndex = detailSetKey == "Hair#BackHair" ? 0
+                : detailSetKey == "Hair#FrontHair" ? 1
+                : detailSetKey == "Hair#SideHair" ? 2
+                : detailSetKey == "Hair#ExtensionHair" ? 3
+                : -1;
+            if (character?.cmpHair == null ||
+                hairIndex < 0 ||
+                hairIndex >= character.cmpHair.Length ||
+                character.cmpHair[hairIndex] == null)
+            {
+                return 0;
+            }
+
+            var cmpHair = character.cmpHair[hairIndex];
+            int signature = 1;
+            if (cmpHair.useAcsColor01) signature |= 1 << 1;
+            if (cmpHair.useAcsColor02) signature |= 1 << 2;
+            if (cmpHair.useAcsColor03) signature |= 1 << 3;
+            if (cmpHair.useMesh) signature |= 1 << 4;
+            if (character.fileHair?.parts != null &&
+                hairIndex < character.fileHair.parts.Length &&
+                character.fileHair.parts[hairIndex].dictBundle != null &&
+                character.fileHair.parts[hairIndex].dictBundle.Count > 0)
+            {
+                signature |= 1 << 5;
+            }
+            return signature;
+        }
+
+        private string GetMainGameTabLabel(string detailSetKey, string tab)
+        {
+            if (detailSetKey == "Face#FaceType")
+            {
+                string rawKey = tab == "Contour" ? "FaceType"
+                    : tab == "Skin" ? "FaceSkinType"
+                    : tab == "Wrinkles" ? "FaceDetailType"
+                    : null;
+                if (rawKey != null)
+                {
+                    string translated = LC(rawKey);
+                    if (!string.Equals(translated, rawKey, StringComparison.Ordinal))
+                    {
+                        return translated;
+                    }
+                }
+            }
             if (detailSetKey.StartsWith("Accessories#", StringComparison.Ordinal) &&
                 (tab == "Accessory Color" || tab == "Hair Color"))
             {
-                return "Color";
+                return LC("Color");
             }
-            return tab;
+            return LC(tab);
         }
 
         private static bool MainGameDetailBelongsToTab(
@@ -7026,6 +8872,44 @@ namespace StudioCharaEditor
 
             List<CustomSelectInfo> allItems = GetSelectorList(character, detail);
             int selectedId = (int)detail.DetailDefine.Get(character);
+            bool selectorGuiEnabledBeforeContextMenu = GUI.enabled;
+            bool blockBehindContextMenu = false;
+            bool supportsFolders = selectorKey.StartsWith("Clothes#", StringComparison.Ordinal) &&
+                                   !rawName.StartsWith("Pattern ", StringComparison.Ordinal) &&
+                                   rawName.EndsWith(" Type", StringComparison.Ordinal);
+            SelectorSidePanel folderPanel = null;
+            if (supportsFolders)
+            {
+                if (mainGameInlineSelectorPanel == null ||
+                    !string.Equals(mainGameInlineSelectorKey, selectorKey, StringComparison.Ordinal) ||
+                    mainGameInlineSelectorPanel.ChaCtrl != character)
+                {
+                    selectorContextMenu = null;
+                    mainGameInlineSelectorPanel = new SelectorSidePanel
+                    {
+                        Name = displayName,
+                        SelectorKey = selectorKey,
+                        ChaCtrl = character,
+                        DetailInfo = detail,
+                        ThumbList = true,
+                        ViewMode = SelectorViewMode.Grid
+                    };
+                    mainGameInlineSelectorKey = selectorKey;
+                    mainGameInlineSelectorFoldersOpen = false;
+                }
+                else
+                {
+                    mainGameInlineSelectorPanel.Name = displayName;
+                    mainGameInlineSelectorPanel.DetailInfo = detail;
+                }
+                folderPanel = mainGameInlineSelectorPanel;
+                EnsureSelectorFolders(folderPanel, allItems);
+                blockBehindContextMenu = selectorContextMenu != null;
+                if (blockBehindContextMenu)
+                {
+                    GUI.enabled = false;
+                }
+            }
             if (selectorKey.StartsWith("Clothes#", StringComparison.Ordinal) &&
                 rawName.StartsWith("Pattern ", StringComparison.Ordinal))
             {
@@ -7039,19 +8923,40 @@ namespace StudioCharaEditor
             GUILayout.BeginHorizontal();
             GUILayout.Label(displayName, theme.MainGameBreadcrumbStyle);
             GUILayout.FlexibleSpace();
+            if (supportsFolders && GUILayout.Button(
+                    LC("Folders"),
+                    GetMainGameSelectorHeaderButtonStyle(mainGameInlineSelectorFoldersOpen),
+                    GUILayout.Width(78f),
+                    GUILayout.Height(30f)))
+            {
+                mainGameInlineSelectorFoldersOpen = !mainGameInlineSelectorFoldersOpen;
+            }
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && allItems.Count > 0;
-            if (GUILayout.Button("Random", GUILayout.Width(76f)))
+            if (GUILayout.Button(
+                    LC("Random"),
+                    GetMainGameSelectorHeaderButtonStyle(false),
+                    GUILayout.Width(76f),
+                    GUILayout.Height(30f)))
             {
                 CustomSelectInfo randomItem = allItems[UnityEngine.Random.Range(0, allItems.Count)];
                 ChangeMainGameSelectorId(character, detail, randomItem.id, selectedId);
             }
             GUI.enabled = oldEnabled;
-            if (detail.RevertValue != null && GUILayout.Button("R", GUILayout.Width(30f)))
+            if (detail.RevertValue != null && GUILayout.Button(
+                    "R",
+                    GetMainGameSelectorHeaderButtonStyle(false),
+                    GUILayout.Width(30f),
+                    GUILayout.Height(30f)))
             {
                 ChangeMainGameSelectorId(character, detail, (int)detail.RevertValue, selectedId);
             }
             GUILayout.EndHorizontal();
+
+            if (supportsFolders && mainGameInlineSelectorFoldersOpen)
+            {
+                DrawMainGameInlineSelectorFolders(folderPanel);
+            }
 
             string searchKey = selectorKey + "|MainGameSearch";
             string searchText = searchWordPool.TryGetValue(searchKey, out string storedSearch)
@@ -7066,14 +8971,34 @@ namespace StudioCharaEditor
                 searchText = string.Empty;
                 searchWordPool[searchKey] = string.Empty;
                 mainGameScrollToSelectorKey = string.Empty;
+                if (folderPanel != null)
+                {
+                    folderPanel.SelectedFolderKey = SelectorFolderAllKey;
+                }
             }
             List<CustomSelectInfo> items = allItems;
+            List<int> folderIndices = folderPanel == null
+                ? null
+                : GetSelectedFolderIndices(folderPanel);
+            if (folderIndices != null)
+            {
+                items = new List<CustomSelectInfo>(folderIndices.Count);
+                for (int index = 0; index < folderIndices.Count; index++)
+                {
+                    int itemIndex = folderIndices[index];
+                    if (itemIndex >= 0 && itemIndex < allItems.Count)
+                    {
+                        items.Add(allItems[itemIndex]);
+                    }
+                }
+            }
             if (!string.IsNullOrWhiteSpace(searchText))
             {
+                List<CustomSelectInfo> sourceItems = items;
                 items = new List<CustomSelectInfo>();
-                for (int index = 0; index < allItems.Count; index++)
+                for (int index = 0; index < sourceItems.Count; index++)
                 {
-                    CustomSelectInfo item = allItems[index];
+                    CustomSelectInfo item = sourceItems[index];
                     string itemName = GetSelectorDisplayName(item);
                     if (itemName.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0 ||
                         item.id.ToString().IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0)
@@ -7111,11 +9036,7 @@ namespace StudioCharaEditor
             }
             if (scrollToSelected)
             {
-                int selectedIndex = GetSelectorIndex(
-                    selectorKey,
-                    allItems,
-                    selectedId,
-                    out string ignoredScrollSelectedName);
+                int selectedIndex = items.FindIndex(item => item.id == selectedId);
                 if (selectedIndex >= 0)
                 {
                     int selectedRow = selectedIndex / columns;
@@ -7178,7 +9099,14 @@ namespace StudioCharaEditor
                     int itemIndex = row * columns + column;
                     if (itemIndex < items.Count)
                     {
-                        DrawMainGameSelectorCell(character, detail, items[itemIndex], selectedId, cellWidth, cellHeight);
+                        DrawMainGameSelectorCell(
+                            character,
+                            detail,
+                            items[itemIndex],
+                            selectedId,
+                            cellWidth,
+                            cellHeight,
+                            folderPanel);
                     }
                     else
                     {
@@ -7201,24 +9129,34 @@ namespace StudioCharaEditor
             scrollPool[scrollKey] = selectorScroll;
             TrackSelectorScroll(oldScroll, selectorScroll);
 
-            GUILayout.BeginHorizontal();
+            GUILayout.BeginHorizontal(GUILayout.Height(32f));
             Rect searchRect = GUILayoutUtility.GetRect(
                 GUIContent.none,
-                GUI.skin.textField,
-                GUILayout.Height(28f),
+                GetMainGameSelectorSearchFieldStyle(),
+                GUILayout.Height(32f),
                 GUILayout.ExpandWidth(true));
             GUI.SetNextControlName(searchKey);
-            string newSearch = GUI.TextField(searchRect, searchText);
+            string newSearch = GUI.TextField(
+                searchRect,
+                searchText,
+                GetMainGameSelectorSearchFieldStyle());
             if (string.IsNullOrEmpty(searchText) && GUI.GetNameOfFocusedControl() != searchKey)
             {
-                GUI.Label(searchRect, "Search", GetSelectorGridLabelStyle());
+                GUI.Label(
+                    searchRect,
+                    LC("Search"),
+                    GetMainGameSelectorSearchPlaceholderStyle());
             }
             if (newSearch != searchText)
             {
                 searchWordPool[searchKey] = newSearch;
                 scrollPool[scrollKey] = Vector2.zero;
             }
-            if (GUILayout.Button("Reset", GUILayout.Width(62f)))
+            if (GUILayout.Button(
+                    LC("Reset"),
+                    GetMainGameSelectorHeaderButtonStyle(false),
+                    GUILayout.Width(76f),
+                    GUILayout.Height(32f)))
             {
                 searchWordPool[searchKey] = string.Empty;
                 scrollPool[scrollKey] = Vector2.zero;
@@ -7240,6 +9178,131 @@ namespace StudioCharaEditor
                 new GUIContent("ZIPMOD: " + sourceName, sourceName),
                 GetMainGameSelectorSourceLabelStyle(),
                 GUILayout.Height(20f));
+
+            GUI.enabled = selectorGuiEnabledBeforeContextMenu;
+        }
+
+        private void DrawMainGameInlineSelectorFolders(SelectorSidePanel panel)
+        {
+            if (panel?.Folders == null)
+            {
+                return;
+            }
+
+            const float gap = 5f;
+            float availableWidth = Math.Max(120f, mainGameRightContentWidth - 10f);
+            int columns = Math.Max(1, Mathf.FloorToInt((availableWidth + gap) / (112f + gap)));
+            float buttonWidth = Math.Max(72f, (availableWidth - gap * (columns - 1)) / columns);
+            GUILayout.BeginVertical(GUI.skin.box);
+            for (int first = 0; first < panel.Folders.Count; first += columns)
+            {
+                GUILayout.BeginHorizontal();
+                for (int column = 0; column < columns; column++)
+                {
+                    if (column > 0)
+                    {
+                        GUILayout.Space(gap);
+                    }
+                    int index = first + column;
+                    if (index >= panel.Folders.Count)
+                    {
+                        GUILayout.Space(buttonWidth);
+                        continue;
+                    }
+                    SelectorFolderInfo folder = panel.Folders[index];
+                    bool selected = string.Equals(
+                        panel.SelectedFolderKey,
+                        folder.Key,
+                        StringComparison.OrdinalIgnoreCase);
+                    string label = folder.Name + " (" + folder.Count + ")";
+                    GUIStyle folderStyle = GetMainGameSelectorHeaderButtonStyle(selected);
+                    Rect folderRect = GUILayoutUtility.GetRect(
+                        new GUIContent(label),
+                        folderStyle,
+                        GUILayout.Width(buttonWidth),
+                        GUILayout.Height(30f));
+                    if (GUI.Button(folderRect, new GUIContent(label), folderStyle))
+                    {
+                        SelectFolder(panel, folder.Key);
+                        scrollPool[panel.SelectorKey + "|MainGameGrid"] = Vector2.zero;
+                    }
+                    else if (ConsumeSelectorRightClick(folderRect))
+                    {
+                        OpenSelectorFolderContextMenu(panel, folder);
+                        AnchorMainGameSelectorContextMenuToCursor();
+                    }
+                }
+                GUILayout.EndHorizontal();
+                if (first + columns < panel.Folders.Count)
+                {
+                    GUILayout.Space(gap);
+                }
+            }
+            GUILayout.EndVertical();
+        }
+
+        private GUIStyle GetMainGameSelectorHeaderButtonStyle(bool selected)
+        {
+            if (mainGameSelectorHeaderButtonStyle == null)
+            {
+                mainGameSelectorHeaderButtonStyle = new GUIStyle(theme.MainGameTabStyle)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    clipping = TextClipping.Clip,
+                    fontSize = 16,
+                    fixedWidth = 0f,
+                    fixedHeight = 0f
+                };
+            }
+            if (mainGameSelectorHeaderSelectedButtonStyle == null)
+            {
+                mainGameSelectorHeaderSelectedButtonStyle =
+                    new GUIStyle(theme.MainGameTabSelectedStyle)
+                    {
+                        alignment = TextAnchor.MiddleCenter,
+                        clipping = TextClipping.Clip,
+                        fontSize = 16,
+                        fixedWidth = 0f,
+                        fixedHeight = 0f
+                    };
+            }
+            return selected
+                ? mainGameSelectorHeaderSelectedButtonStyle
+                : mainGameSelectorHeaderButtonStyle;
+        }
+
+        private GUIStyle GetMainGameSelectorSearchFieldStyle()
+        {
+            if (mainGameSelectorSearchFieldStyle == null)
+            {
+                mainGameSelectorSearchFieldStyle = new GUIStyle(GUI.skin.textField)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    clipping = TextClipping.Clip,
+                    fontSize = 16,
+                    fixedWidth = 0f,
+                    fixedHeight = 0f,
+                    padding = new RectOffset(7, 7, 2, 3),
+                    contentOffset = Vector2.zero
+                };
+            }
+            return mainGameSelectorSearchFieldStyle;
+        }
+
+        private GUIStyle GetMainGameSelectorSearchPlaceholderStyle()
+        {
+            if (mainGameSelectorSearchPlaceholderStyle == null)
+            {
+                mainGameSelectorSearchPlaceholderStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    clipping = TextClipping.Clip,
+                    fontSize = 16,
+                    padding = new RectOffset(4, 4, 1, 2),
+                    contentOffset = Vector2.zero
+                };
+            }
+            return mainGameSelectorSearchPlaceholderStyle;
         }
 
         private void DrawMainGameCollapsedPatternSelector(
@@ -7313,7 +9376,8 @@ namespace StudioCharaEditor
             CustomSelectInfo item,
             int selectedId,
             float width,
-            float height)
+            float height,
+            SelectorSidePanel folderPanel = null)
         {
             Rect cellRect = GUILayoutUtility.GetRect(width, height, GUILayout.Width(width), GUILayout.Height(height));
             bool selected = item.id == selectedId;
@@ -7354,6 +9418,11 @@ namespace StudioCharaEditor
             {
                 ChangeMainGameSelectorId(character, detail, item.id, selectedId);
                 Event.current.Use();
+            }
+            else if (folderPanel != null && ConsumeSelectorRightClick(cellRect))
+            {
+                OpenSelectorItemContextMenu(folderPanel, item);
+                AnchorMainGameSelectorContextMenuToCursor();
             }
         }
 
@@ -7545,40 +9614,49 @@ namespace StudioCharaEditor
             GUILayout.EndHorizontal();
         }
 
-        private static string GetMainGameGroupName(string rawTitle)
+        private string GetMainGameGroupName(string rawTitle)
         {
+            string translated = LC(rawTitle);
+            if (!string.Equals(translated, rawTitle, StringComparison.Ordinal))
+            {
+                return translated;
+            }
+            if (UseExternalMainGameLocalizationKeys())
+            {
+                return rawTitle;
+            }
             string group = (rawTitle ?? string.Empty).Trim('=');
             switch (group.ToUpperInvariant())
             {
                 case "SHAPE":
-                    return "Body Shape";
+                    return LC("Body Shape");
                 case "SKIN":
-                    return "Skin";
+                    return LC("Skin");
                 case "FACE":
-                    return "Face Settings";
+                    return LC("Face Settings");
                 case "EYES":
-                    return "Eye Settings";
+                    return LC("Eye Settings");
                 case "MAKEUP":
-                    return "Makeup";
+                    return LC("Makeup");
                 default:
-                    return HumanizeMainGameName(group);
+                    return LC(HumanizeMainGameName(group));
             }
         }
 
-        private static string GetMainGameLeftPanelTitle(string category1)
+        private string GetMainGameLeftPanelTitle(string category1)
         {
             switch (category1)
             {
-                case "Body": return "Body Shape";
-                case "Face": return "Face Settings";
+                case "Body": return GetMainGameLocalizedName("==SHAPE==", "Body Shape");
+                case "Face": return GetMainGameLocalizedName("==FACE==", "Face Settings");
                 case "Hair": return null;
-                case "Clothes": return "Outfit";
-                case "Accessories": return "Slot";
-                default: return HumanizeMainGameName(category1);
+                case "Clothes": return GetMainGameLocalizedName("Clothes", "Outfit");
+                case "Accessories": return GetMainGameLocalizedName("Accessories", "Slot");
+                default: return GetMainGameLocalizedName(category1, HumanizeMainGameName(category1));
             }
         }
 
-        private static string GetMainGameRightTitle(
+        private string GetMainGameRightTitle(
             CharaEditorController controller,
             string category1,
             string category2)
@@ -7594,13 +9672,22 @@ namespace StudioCharaEditor
             return GetMainGamePageName(category1, category2);
         }
 
-        private static string GetMainGamePageName(string rawName)
+        private string GetMainGamePageName(string rawName)
         {
             return GetMainGamePageName(null, rawName);
         }
 
-        private static string GetMainGamePageName(string category1, string rawName)
+        private string GetMainGamePageName(string category1, string rawName)
         {
+            string translated = LC(rawName);
+            if (!string.Equals(translated, rawName, StringComparison.Ordinal))
+            {
+                return translated;
+            }
+            if (UseExternalMainGameLocalizationKeys())
+            {
+                return rawName;
+            }
             switch (rawName)
             {
                 case "FaceType": return "Facial Type";
@@ -7653,23 +9740,63 @@ namespace StudioCharaEditor
                 case "Socks": return "Socks";
                 case "Shoes": return "Shoes";
                 default:
-                    return HumanizeMainGameName(rawName);
+                    return LC(HumanizeMainGameName(rawName));
             }
         }
 
-        private static string GetMainGameDetailName(string detailKey)
+        private string GetMainGameDetailName(string detailKey)
+        {
+            string language = StudioCharaEditor.UILanguage?.Value ?? "default";
+            if (!string.Equals(
+                    mainGameDetailNameCacheLanguage,
+                    language,
+                    StringComparison.Ordinal) ||
+                !ReferenceEquals(
+                    mainGameDetailNameLocalizationDictionary,
+                    curLocalizationDict))
+            {
+                mainGameDetailNameCache.Clear();
+                mainGameDetailNameCacheLanguage = language;
+                mainGameDetailNameLocalizationDictionary = curLocalizationDict;
+            }
+            if (detailKey != null &&
+                mainGameDetailNameCache.TryGetValue(
+                    detailKey,
+                    out string cached))
+            {
+                return cached;
+            }
+
+            string result = ResolveMainGameDetailName(detailKey);
+            if (detailKey != null)
+            {
+                mainGameDetailNameCache[detailKey] = result;
+            }
+            return result;
+        }
+
+        private string ResolveMainGameDetailName(string detailKey)
         {
             string rawName = GetDetailName(detailKey);
+            string translated = LC(rawName);
+            if (!string.Equals(translated, rawName, StringComparison.Ordinal))
+            {
+                return translated;
+            }
+            if (UseExternalMainGameLocalizationKeys())
+            {
+                return rawName;
+            }
             if (detailKey.StartsWith("Clothes#", StringComparison.Ordinal))
             {
-                if (Regex.IsMatch(rawName, "^Color [123]$")) return "Color";
-                if (Regex.IsMatch(rawName, "^Gloss [123]$")) return "Shine";
-                if (Regex.IsMatch(rawName, "^Metallic [123]$")) return "Texture";
-                if (Regex.IsMatch(rawName, "^Pattern [123]$")) return "Type";
+                if (Regex.IsMatch(rawName, "^Color [123]$")) return LC("Color");
+                if (Regex.IsMatch(rawName, "^Gloss [123]$")) return LC("Shine");
+                if (Regex.IsMatch(rawName, "^Metallic [123]$")) return LC("Texture");
+                if (Regex.IsMatch(rawName, "^Pattern [123]$")) return LC("Type");
                 Match patternDetail = Regex.Match(rawName, "^Pattern [123] (.+)$");
                 if (patternDetail.Success)
                 {
-                    return HumanizeMainGameName(patternDetail.Groups[1].Value);
+                    return LC(HumanizeMainGameName(patternDetail.Groups[1].Value));
                 }
             }
             if (rawName.EndsWith("HairType", StringComparison.Ordinal) ||
@@ -7682,7 +9809,7 @@ namespace StudioCharaEditor
                 rawName == "CheekType" || rawName == "LipType" ||
                 rawName == "PaintType")
             {
-                return "Type";
+                return LC("Type");
             }
             switch (rawName)
             {
@@ -7691,27 +9818,48 @@ namespace StudioCharaEditor
                 case "FaceDetailType":
                 case "SkinType":
                 case "DetailType":
-                    return "Type";
+                    return LC("Type");
                 case "FaceDetailPower":
                 case "DetailPower":
-                    return "Strength";
-                case "SkinColor": return "Color";
-                case "SkinGloss": return "Gloss";
-                case "SkinMetallic": return "Metallic";
-                case "Acc Category": return "Category";
-                case "Acc ID": return "Type";
-                case "Height": return "Height";
-                case "HeadSize": return "Head Size";
-                case "EyeshadowType": return "Type";
-                case "EyeshadowColor": return "Color";
-                case "EyeshadowGloss": return "Gloss";
+                    return LC("Strength");
+                case "SkinColor": return LC("Color");
+                case "SkinGloss": return LC("Gloss");
+                case "SkinMetallic": return LC("Metallic");
+                case "Acc Category": return LC("Category");
+                case "Acc ID": return LC("Type");
+                case "Height": return LC("Height");
+                case "HeadSize": return LC("Head Size");
+                case "EyeshadowType": return LC("Type");
+                case "EyeshadowColor": return LC("Color");
+                case "EyeshadowGloss": return LC("Gloss");
                 default:
                     if (rawName.StartsWith("MultiDetail ", StringComparison.Ordinal))
                     {
-                        return rawName.Replace("MultiDetail", "Wrinkles");
+                        return LC(rawName.Replace("MultiDetail", "Wrinkles"));
                     }
-                    return HumanizeMainGameName(rawName);
+                    return LC(HumanizeMainGameName(rawName));
             }
+        }
+
+        private string GetMainGameLocalizedName(string rawName, string englishName)
+        {
+            string translatedRaw = LC(rawName);
+            if (!string.Equals(translatedRaw, rawName, StringComparison.Ordinal))
+            {
+                return translatedRaw;
+            }
+            if (UseExternalMainGameLocalizationKeys())
+            {
+                return rawName;
+            }
+            return LC(englishName);
+        }
+
+        private static bool UseExternalMainGameLocalizationKeys()
+        {
+            string language = StudioCharaEditor.UILanguage?.Value;
+            return !string.IsNullOrWhiteSpace(language) &&
+                   !string.Equals(language, "default", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string HumanizeMainGameName(string value)
@@ -7733,30 +9881,67 @@ namespace StudioCharaEditor
             out string category2,
             out string detailSetKey)
         {
-            controller = null;
-            category1 = null;
-            category2 = null;
-            detailSetKey = null;
+            int safeCategory1Index = Mathf.Clamp(
+                catelogIndex1,
+                0,
+                CharaEditorController.CATEGORY1.Length - 1);
+            int requestedCategory2Index = catelogIndex2[safeCategory1Index];
+            bool cacheMatches = mainGameContextFrame == Time.frameCount &&
+                                ReferenceEquals(mainGameContextTarget, ociTarget) &&
+                                mainGameContextCategory1Index == safeCategory1Index &&
+                                mainGameContextCategory2Index == requestedCategory2Index;
+            if (!cacheMatches)
+            {
+                RefreshMainGameContextCache(
+                    safeCategory1Index,
+                    requestedCategory2Index);
+            }
+
+            controller = mainGameContextController;
+            category1 = mainGameContextCategory1;
+            category2 = mainGameContextCategory2;
+            detailSetKey = mainGameContextDetailSetKey;
+            return mainGameContextValid;
+        }
+
+        private void RefreshMainGameContextCache(
+            int safeCategory1Index,
+            int requestedCategory2Index)
+        {
+            mainGameContextFrame = Time.frameCount;
+            mainGameContextTarget = ociTarget;
+            mainGameContextCategory1Index = safeCategory1Index;
+            mainGameContextCategory2Index = requestedCategory2Index;
+            mainGameContextValid = false;
+            mainGameContextController = null;
+            mainGameContextCategory1 = null;
+            mainGameContextCategory2 = null;
+            mainGameContextDetailSetKey = null;
             if (ociTarget == null)
             {
-                return false;
+                return;
             }
 
-            controller = CharaEditorMgr.Instance.GetEditorController(ociTarget);
+            CharaEditorController controller =
+                CharaEditorMgr.Instance.GetEditorController(ociTarget);
             if (controller == null)
             {
-                return false;
+                return;
             }
 
-            catelogIndex1 = Mathf.Clamp(catelogIndex1, 0, CharaEditorController.CATEGORY1.Length - 1);
-            category1 = CharaEditorController.CATEGORY1[catelogIndex1];
+            catelogIndex1 = safeCategory1Index;
+            string category1 = CharaEditorController.CATEGORY1[safeCategory1Index];
             string[] category2List = controller.GetCategoryList(category1);
             if (category2List == null || category2List.Length == 0)
             {
-                return false;
+                return;
             }
 
-            int selectedIndex = Mathf.Clamp(catelogIndex2[catelogIndex1], 0, category2List.Length - 1);
+            int selectedIndex = Mathf.Clamp(
+                requestedCategory2Index,
+                0,
+                category2List.Length - 1);
+            catelogIndex2[safeCategory1Index] = selectedIndex;
             if (category2List[selectedIndex].StartsWith("==") || category2List[selectedIndex].StartsWith("++"))
             {
                 selectedIndex = Array.FindIndex(
@@ -7764,14 +9949,17 @@ namespace StudioCharaEditor
                     title => !title.StartsWith("==") && !title.StartsWith("++"));
                 if (selectedIndex < 0)
                 {
-                    return false;
+                    return;
                 }
-                catelogIndex2[catelogIndex1] = selectedIndex;
+                catelogIndex2[safeCategory1Index] = selectedIndex;
             }
 
-            category2 = category2List[selectedIndex];
-            detailSetKey = category1 + "#" + category2;
-            return true;
+            mainGameContextCategory2Index = selectedIndex;
+            mainGameContextController = controller;
+            mainGameContextCategory1 = category1;
+            mainGameContextCategory2 = category2List[selectedIndex];
+            mainGameContextDetailSetKey = category1 + "#" + mainGameContextCategory2;
+            mainGameContextValid = true;
         }
 
         private void BeginMainGameSave()

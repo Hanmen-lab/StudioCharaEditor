@@ -30,7 +30,7 @@ namespace StudioCharaEditor
     {
         public const string GUID = "Countd360.StudioCharaEditor.HS2";
         public const string Name = "Studio Chara Editor";
-        public const string Version = "3.0.0";
+        public const string Version = "3.1.0";
         public const string DefaultPathMacro = "$DEFAULT_CHAR_PATH$";
         public const string DefaultCoordMacro = "$DEFAULT_COORD_PATH$";
 
@@ -86,6 +86,7 @@ namespace StudioCharaEditor
         public static ConfigEntry<int> MainGamePluginCollapsedX { get; private set; }
         public static ConfigEntry<int> MainGamePluginCollapsedY { get; private set; }
         public static ConfigEntry<float> MainGameUIScale { get; private set; }
+        public static ConfigEntry<bool> MainGameUseMouseWheelSliders { get; private set; }
 
         internal SimpleToolbarToggle _toolbarCharEditor;
         private Harmony harmony;
@@ -165,6 +166,11 @@ namespace StudioCharaEditor
                 new ConfigDescription(
                     "Scale of the Main Game UI theme.",
                     new AcceptableValueRange<float>(0.75f, 1.6f)));
+            MainGameUseMouseWheelSliders = Config.Bind(
+                "GUI.MainGame",
+                "Use Mouse Wheel in Sliders",
+                false,
+                "Allow the mouse wheel to change Main Game UI slider values while the pointer is over a slider.");
             ShowMultiDetailUI.SettingChanged += OnShowMultiDetailUISettingChanged;
             UITheme.SettingChanged += OnUiThemeSettingChanged;
 
@@ -191,6 +197,7 @@ namespace StudioCharaEditor
             harmony = new Harmony(GUID);
             PluginBetterPenetration.InstallHarmonyPatches(harmony);
             PluginHooahComponents.Initialize(harmony);
+            PluginStudioAccessoryNames.InstallHarmonyPatches(harmony);
 
             // Toolbar Button
             _toolbarCharEditor = new SimpleToolbarToggle(

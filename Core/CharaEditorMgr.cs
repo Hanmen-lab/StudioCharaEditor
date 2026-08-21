@@ -272,13 +272,16 @@ namespace StudioCharaEditor
 
         private Dictionary<string, string> AssignLocalizeDict()
         {
-            string tgtDicName = StudioCharaEditor.UILanguage.Value;
+            string tgtDicName = ResolveLocalizationDictionaryName(
+                StudioCharaEditor.UILanguage.Value);
 
             if (charaEditorLocalizeDict != null)
             {
                 if (charaEditorLocalizeDict.ContainsKey(tgtDicName))
                 {
-                    return charaEditorLocalizeDict[tgtDicName];
+                    Dictionary<string, string> selected = charaEditorLocalizeDict[tgtDicName];
+                    AddBuiltInMainGameTranslations(selected, tgtDicName);
+                    return selected;
                 }
                 else if (charaEditorLocalizeDict.ContainsKey("default"))
                 {
@@ -286,6 +289,204 @@ namespace StudioCharaEditor
                 }
             }
             return null;
+        }
+
+        private static void AddBuiltInMainGameTranslations(
+            Dictionary<string, string> dictionary,
+            string language)
+        {
+            if (dictionary == null)
+            {
+                return;
+            }
+
+            Dictionary<string, string> additions = null;
+            if (string.Equals(language, "chinese", StringComparison.OrdinalIgnoreCase))
+            {
+                additions = new Dictionary<string, string>
+                {
+                    ["Status"] = "状态",
+                    ["Plugin settings"] = "插件设置",
+                    ["Look"] = "视线",
+                    ["Camera"] = "相机",
+                    ["Front"] = "前方",
+                    ["Play Pose"] = "播放姿势",
+                    ["Neck"] = "颈部",
+                    ["Pose"] = "姿势",
+                    ["Eyebrows"] = "眉毛",
+                    ["Eyes"] = "眼睛",
+                    ["Mouth"] = "嘴部",
+                    ["Save with translated names"] = "使用翻译名称保存",
+                    ["Lock Cameralight"] = "锁定相机灯光",
+                    ["Advanced BoneMod window"] = "高级骨骼修改窗口",
+                    ["Blendshape Creator"] = "混合形状创建器",
+                    ["Coordinate Visibility Rules"] = "坐标可见性规则",
+                    ["Toggle Backlight"] = "切换背光",
+                    ["Show height measure bar"] = "显示身高测量条",
+                    ["Toggle Blinking"] = "切换眨眼",
+                    ["Split XYZ scale sliders"] = "拆分 XYZ 缩放滑块",
+                    ["Search"] = "搜索",
+                    ["Reset"] = "重置",
+                    ["Random"] = "随机",
+                    ["Type"] = "类型",
+                    ["Color"] = "颜色",
+                    ["Folders"] = "文件夹",
+                    ["Create"] = "创建",
+                    ["Create folder"] = "创建文件夹",
+                    ["Rename"] = "重命名",
+                    ["Close"] = "关闭",
+                    ["Clear items"] = "清空项目",
+                    ["Delete folder"] = "删除文件夹",
+                    ["Add favorite"] = "添加收藏",
+                    ["Remove favorite"] = "移除收藏",
+                    ["System"] = "系统",
+                    ["Settings"] = "设置",
+                    ["Use Mouse Wheel in Sliders"] = "使用鼠标滚轮调整滑块",
+                    ["UI Scale"] = "界面缩放",
+                    ["Load"] = "加载",
+                    ["Delete"] = "删除",
+                    ["Save"] = "保存",
+                    ["Save New"] = "另存为新卡",
+                    ["Overwrite coordinate"] = "覆盖服装卡",
+                    ["Overwrite Thumbnail"] = "覆盖缩略图",
+                    ["Keep Thumbnail"] = "保留缩略图",
+                    ["No coordinate selected"] = "未选择服装卡",
+                    ["Refresh"] = "刷新",
+                    ["Newest"] = "最新",
+                    ["Select clothes folder"] = "选择服装文件夹",
+                    ["Load Clothing"] = "加载服装",
+                    ["Load Accessories"] = "加载饰品",
+                    ["Load All"] = "全部加载",
+                    ["Apply"] = "应用",
+                    ["Cancel"] = "取消",
+                    ["Confirm Delete"] = "确认删除"
+                };
+            }
+            else if (string.Equals(language, "日本語", StringComparison.OrdinalIgnoreCase))
+            {
+                additions = new Dictionary<string, string>
+                {
+                    ["Status"] = "ステータス",
+                    ["Plugin settings"] = "プラグイン設定",
+                    ["Look"] = "視線",
+                    ["Camera"] = "カメラ",
+                    ["Front"] = "正面",
+                    ["Play Pose"] = "ポーズ再生",
+                    ["Neck"] = "首",
+                    ["Pose"] = "ポーズ",
+                    ["Eyebrows"] = "眉",
+                    ["Eyes"] = "目",
+                    ["Mouth"] = "口",
+                    ["Save with translated names"] = "翻訳名で保存",
+                    ["Lock Cameralight"] = "カメラライトを固定",
+                    ["Advanced BoneMod window"] = "Advanced BoneMod ウィンドウ",
+                    ["Blendshape Creator"] = "ブレンドシェイプ作成",
+                    ["Coordinate Visibility Rules"] = "コーディネート表示ルール",
+                    ["Toggle Backlight"] = "バックライト切替",
+                    ["Show height measure bar"] = "身長測定バーを表示",
+                    ["Toggle Blinking"] = "まばたき切替",
+                    ["Split XYZ scale sliders"] = "XYZスケールを分割",
+                    ["Search"] = "検索",
+                    ["Reset"] = "リセット",
+                    ["Random"] = "ランダム",
+                    ["Type"] = "種類",
+                    ["Color"] = "色",
+                    ["Folders"] = "フォルダー",
+                    ["Create"] = "作成",
+                    ["Create folder"] = "フォルダー作成",
+                    ["Rename"] = "名前変更",
+                    ["Close"] = "閉じる",
+                    ["Clear items"] = "項目をクリア",
+                    ["Delete folder"] = "フォルダー削除",
+                    ["Add favorite"] = "お気に入りに追加",
+                    ["Remove favorite"] = "お気に入りから削除",
+                    ["System"] = "システム",
+                    ["Settings"] = "設定",
+                    ["Use Mouse Wheel in Sliders"] = "マウスホイールでスライダーを操作",
+                    ["UI Scale"] = "UIスケール",
+                    ["Load"] = "読込",
+                    ["Delete"] = "削除",
+                    ["Save"] = "保存",
+                    ["Save New"] = "新規保存",
+                    ["Overwrite coordinate"] = "コーディネートを上書き",
+                    ["Overwrite Thumbnail"] = "サムネイルを更新",
+                    ["Keep Thumbnail"] = "サムネイルを維持",
+                    ["No coordinate selected"] = "コーディネートが選択されていません",
+                    ["Refresh"] = "更新",
+                    ["Newest"] = "新しい順",
+                    ["Select clothes folder"] = "服フォルダーを選択",
+                    ["Load Clothing"] = "服を読込",
+                    ["Load Accessories"] = "アクセサリーを読込",
+                    ["Load All"] = "すべて読込",
+                    ["Apply"] = "適用",
+                    ["Cancel"] = "キャンセル",
+                    ["Confirm Delete"] = "削除確認"
+                };
+            }
+
+            if (additions == null)
+            {
+                return;
+            }
+            foreach (KeyValuePair<string, string> pair in additions)
+            {
+                if (!dictionary.TryGetValue(pair.Key, out string existing) ||
+                    string.IsNullOrWhiteSpace(existing))
+                {
+                    dictionary[pair.Key] = pair.Value;
+                }
+            }
+        }
+
+        private static string ResolveLocalizationDictionaryName(string configuredName)
+        {
+            if (!string.IsNullOrWhiteSpace(configuredName) &&
+                !string.Equals(configuredName, "default", StringComparison.OrdinalIgnoreCase))
+            {
+                return configuredName;
+            }
+
+            try
+            {
+                string configPath = Path.Combine(Paths.ConfigPath, "AutoTranslatorConfig.ini");
+                if (!File.Exists(configPath))
+                {
+                    return "default";
+                }
+
+                foreach (string rawLine in File.ReadLines(configPath))
+                {
+                    string line = rawLine?.Trim();
+                    if (string.IsNullOrEmpty(line) || line.StartsWith("#") || line.StartsWith(";"))
+                    {
+                        continue;
+                    }
+                    if (!line.StartsWith("Language=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    string language = line.Substring("Language=".Length).Trim();
+                    if (language.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ||
+                        language.IndexOf("chinese", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return "chinese";
+                    }
+                    if (language.StartsWith("ja", StringComparison.OrdinalIgnoreCase) ||
+                        language.IndexOf("japanese", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return "日本語";
+                    }
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                StudioCharaEditor.Logger?.LogDebug(
+                    "Could not detect AutoTranslator language: " + ex.Message);
+            }
+
+            return "default";
         }
 
         static public string GetDllPath()

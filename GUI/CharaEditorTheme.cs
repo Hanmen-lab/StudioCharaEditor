@@ -30,6 +30,7 @@ namespace StudioCharaEditor
         public Texture2D MainGameSliderTrackTexture { get; private set; }
         public Texture2D MainGameExitNormalTexture { get; private set; }
         public Texture2D MainGameExitSelectedTexture { get; private set; }
+        public Texture2D MainGameMaterialEditorShortcutTexture { get; private set; }
         public GUIStyle MainGameTransparentWindowStyle { get; private set; }
         public GUIStyle MainGamePanelWindowStyle { get; private set; }
         public GUIStyle MainGameSectionHeaderStyle { get; private set; }
@@ -104,6 +105,8 @@ namespace StudioCharaEditor
             // The mode-switch icon is shared by both themes.
             MainGameExitNormalTexture = ThemeTexture("sp_ai_make_07_00.png", 128, 128, Transparent, Transparent, 0, 0);
             MainGameExitSelectedTexture = ThemeTexture("sp_ai_make_07_01.png", 128, 128, Transparent, Transparent, 0, 0);
+            MainGameMaterialEditorShortcutTexture =
+                LoadEmbeddedTexture("material_editor_shortcut.png");
 
             if (IsMainGame)
             {
@@ -202,11 +205,13 @@ namespace StudioCharaEditor
             ColorSwatchButtonStyle.margin = new RectOffset(4, 4, 2, 2);
 
             Skin.horizontalScrollbar = ScrollBarStyle(Skin.horizontalScrollbar, scrollTrackTex, -1f, 8f);
-            // Keep the proportional thumb, but give the preview/category
-            // scroll bar a large enough hit target to grab comfortably.
+            // A global fixed thumb height breaks Unity's mapping between the
+            // visual thumb and the content range: the thumb stops short of the
+            // bottom in the old UI. Keep it proportional here; preview grids
+            // can still opt into a local minimum hit target.
             Skin.verticalScrollbar = ScrollBarStyle(Skin.verticalScrollbar, scrollTrackTex, 18f, -1f);
             Skin.horizontalScrollbarThumb = ScrollBarStyle(Skin.horizontalScrollbarThumb, scrollThumbTex, -1f, 8f);
-            Skin.verticalScrollbarThumb = ScrollBarStyle(Skin.verticalScrollbarThumb, scrollThumbTex, 18f, 34f);
+            Skin.verticalScrollbarThumb = ScrollBarStyle(Skin.verticalScrollbarThumb, scrollThumbTex, 18f, 0f);
             Skin.verticalScrollbarThumb.stretchHeight = true;
             Skin.horizontalScrollbarLeftButton = HiddenScrollButton(Skin.horizontalScrollbarLeftButton, clearTex);
             Skin.horizontalScrollbarRightButton = HiddenScrollButton(Skin.horizontalScrollbarRightButton, clearTex);
@@ -330,6 +335,10 @@ namespace StudioCharaEditor
             Skin.textField = FieldStyle(Skin.textField, fieldTex, fieldFocusTex);
             Skin.textField.fixedHeight = 32f;
             Skin.textArea = FieldStyle(Skin.textArea, fieldTex, fieldFocusTex);
+            Skin.settings.cursorColor = Rgba(237, 232, 222);
+            Skin.settings.selectionColor = Rgba(90, 150, 48, 224);
+            Skin.settings.doubleClickSelectsWord = true;
+            Skin.settings.tripleClickSelectsLine = true;
             MainGameNumericValueStyle = new GUIStyle(Skin.textField)
             {
                 alignment = TextAnchor.MiddleCenter,

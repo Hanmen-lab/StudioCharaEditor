@@ -80,6 +80,9 @@ namespace StudioCharaEditor
         private Texture2D savingTexture;
         private bool savingCoordinate = false;
         private string coordinateName = "MyCoordinate";
+        private readonly Dictionary<string, string> autoLocalizationCache =
+            new Dictionary<string, string>();
+        private string autoLocalizationLanguage = string.Empty;
 
         // GUI
         private GUIStyle largeLabel;
@@ -107,6 +110,8 @@ namespace StudioCharaEditor
         private GUIStyle selectorGridLabelStyle;
         private GUIStyle selectorTooltipStyle;
         private GUIStyle selectorSourceLabelStyle;
+        private GUIStyle selectorContextMenuStyle;
+        private GUIStyle selectorContextMenuButtonStyle;
         private const float ThumbListRowGap = 4f;
         private const int ColorSwatchWidth = 74;
         private const int ColorSwatchHeight = 20;
@@ -540,7 +545,6 @@ namespace StudioCharaEditor
                 theme.Dispose();
                 theme = null;
             }
-
             if (savingTexture != null)
             {
                 Destroy(savingTexture);
@@ -572,6 +576,8 @@ namespace StudioCharaEditor
                 selectorGridLabelStyle = null;
                 selectorTooltipStyle = null;
                 selectorSourceLabelStyle = null;
+                selectorContextMenuStyle = null;
+                selectorContextMenuButtonStyle = null;
                 mainGameAuxiliaryLabelStyle = null;
                 mainGameStatusLabelStyle = null;
                 mainGameAuxiliaryValueStyle = null;
@@ -585,6 +591,10 @@ namespace StudioCharaEditor
                 mainGameCoordinateFolderSelectedStyle = null;
                 mainGameCoordinateHeaderStyle = null;
                 mainGameCoordinateHeaderSelectedStyle = null;
+                mainGameSelectorHeaderButtonStyle = null;
+                mainGameSelectorHeaderSelectedButtonStyle = null;
+                mainGameSelectorSearchFieldStyle = null;
+                mainGameSelectorSearchPlaceholderStyle = null;
                 detailPageSelect = SelectMode.Normal;
             }
 
@@ -997,14 +1007,19 @@ namespace StudioCharaEditor
                         FollowSelectorWindowMainMove(previousWindowRect);
                         ClampSelectorWindowToScreen();
                         Vector2 selectorPositionBeforeWindow = selectorWindowRect.position;
-                        selectorWindowRect = GUI.Window(selectorWindowID, selectorWindowRect, new GUI.WindowFunction(FuncSelectorWindowGUI), LC("Select item"), windowStyle);
+                        selectorWindowRect = GUI.Window(
+                            selectorWindowID,
+                            selectorWindowRect,
+                            new GUI.WindowFunction(FuncSelectorWindowGUI),
+                            LC("Select item"),
+                            windowStyle);
                         if ((selectorWindowRect.position - selectorPositionBeforeWindow).sqrMagnitude > 0.01f)
                         {
                             selectorWindowPositionInitialized = true;
                         }
                     }
 
-                    mouseInWindow = GetEditorMouseRects().Any(rect => rect.Contains(Event.current.mousePosition)) ||
+                    mouseInWindow = IsMouseInsideEditorWindow(Event.current.mousePosition) ||
                                     (selectorSidePanel != null && selectorWindowRect.Contains(Event.current.mousePosition));
                     if (mouseInWindow)
                     {
@@ -2449,6 +2464,14 @@ namespace StudioCharaEditor
 
         private void DrawSelectorContextMenu(SelectorSidePanel panel)
         {
+            DrawSelectorContextMenu(panel, selectorWindowRect.width, selectorWindowRect.height);
+        }
+
+        private void DrawSelectorContextMenu(
+            SelectorSidePanel panel,
+            float containerWidth,
+            float containerHeight)
+        {
             if (selectorContextMenu == null || panel == null)
             {
                 return;
@@ -2457,11 +2480,11 @@ namespace StudioCharaEditor
             const float menuWidth = 220f;
             float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item ? 260f : 210f;
             Vector2 menuPosition = GUIUtility.ScreenToGUIPoint(selectorContextMenu.Position);
-            float x = Mathf.Clamp(menuPosition.x, 4f, Math.Max(4f, selectorWindowRect.width - menuWidth - 4f));
-            float y = Mathf.Clamp(menuPosition.y, 24f, Math.Max(24f, selectorWindowRect.height - menuHeight - 4f));
+            float x = Mathf.Clamp(menuPosition.x, 4f, Math.Max(4f, containerWidth - menuWidth - 4f));
+            float y = Mathf.Clamp(menuPosition.y, 24f, Math.Max(24f, containerHeight - menuHeight - 4f));
             selectorContextMenu.Rect = new Rect(x, y, menuWidth, menuHeight);
 
-            GUILayout.BeginArea(selectorContextMenu.Rect, GUI.skin.box);
+            GUILayout.BeginArea(selectorContextMenu.Rect, GetSelectorContextMenuStyle());
             if (selectorContextMenu.Type == SelectorContextMenuType.Item)
             {
                 DrawSelectorItemContextMenu(panel, selectorContextMenu);
@@ -2471,6 +2494,55 @@ namespace StudioCharaEditor
                 DrawSelectorFolderContextMenu(panel, selectorContextMenu);
             }
             GUILayout.EndArea();
+        }
+
+        private GUIStyle GetSelectorContextMenuStyle()
+        {
+            if (selectorContextMenuStyle == null)
+            {
+                GUIStyle source = activeThemeMode == CharaEditorUiTheme.MainGame &&
+                                  theme?.MainGamePanelWindowStyle != null
+                    ? theme.MainGamePanelWindowStyle
+                    : GUI.skin.window;
+                selectorContextMenuStyle = new GUIStyle(source)
+                {
+                    padding = new RectOffset(10, 10, 10, 10),
+                    margin = new RectOffset(0, 0, 0, 0),
+                    border = new RectOffset(1, 1, 1, 1),
+                    fixedWidth = 0f,
+                    fixedHeight = 0f,
+                    fontSize = 16
+                };
+                if (activeThemeMode == CharaEditorUiTheme.MainGame)
+                {
+                    selectorContextMenuStyle.normal.background = Texture2D.blackTexture;
+                    selectorContextMenuStyle.hover.background = Texture2D.blackTexture;
+                    selectorContextMenuStyle.active.background = Texture2D.blackTexture;
+                    selectorContextMenuStyle.focused.background = Texture2D.blackTexture;
+                    selectorContextMenuStyle.onNormal.background = Texture2D.blackTexture;
+                    selectorContextMenuStyle.onHover.background = Texture2D.blackTexture;
+                    selectorContextMenuStyle.onActive.background = Texture2D.blackTexture;
+                    selectorContextMenuStyle.onFocused.background = Texture2D.blackTexture;
+                }
+            }
+            return selectorContextMenuStyle;
+        }
+
+        private GUIStyle GetSelectorContextMenuButtonStyle()
+        {
+            if (selectorContextMenuButtonStyle == null)
+            {
+                selectorContextMenuButtonStyle = new GUIStyle(GUI.skin.button)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    clipping = TextClipping.Clip,
+                    fixedWidth = 0f,
+                    fixedHeight = 0f,
+                    fontSize = activeThemeMode == CharaEditorUiTheme.MainGame ? 16 : GUI.skin.button.fontSize,
+                    padding = new RectOffset(5, 5, 2, 3)
+                };
+            }
+            return selectorContextMenuButtonStyle;
         }
 
         private void DrawSelectorItemContextMenu(SelectorSidePanel panel, SelectorContextMenu menu)
@@ -2514,7 +2586,11 @@ namespace StudioCharaEditor
 
             GUILayout.BeginHorizontal();
             menu.NewFolderName = GUILayout.TextField(menu.NewFolderName ?? string.Empty);
-            if (GUILayout.Button(LC("Create"), GUILayout.Width(58)))
+                if (GUILayout.Button(
+                        LC("Create"),
+                        GetSelectorContextMenuButtonStyle(),
+                        GUILayout.Width(86f),
+                        GUILayout.Height(28f)))
             {
                 SelectorCustomFolder folder = CreateSelectorCustomFolder(menu.Scope, menu.NewFolderName);
                 if (folder != null)
@@ -2542,7 +2618,11 @@ namespace StudioCharaEditor
             {
                 GUILayout.BeginHorizontal();
                 menu.RenameFolderName = GUILayout.TextField(menu.RenameFolderName ?? string.Empty);
-                if (GUILayout.Button(LC("Rename"), GUILayout.Width(68)))
+                if (GUILayout.Button(
+                        LC("Rename"),
+                        GetSelectorContextMenuButtonStyle(),
+                        GUILayout.Width(86f),
+                        GUILayout.Height(28f)))
                 {
                     if (RenameSelectorCustomFolder(menu.Scope, menu.FolderName, menu.RenameFolderName, panel))
                     {
@@ -2577,7 +2657,11 @@ namespace StudioCharaEditor
             GUILayout.Label(LC("Create folder"), GUI.skin.box);
             GUILayout.BeginHorizontal();
             menu.NewFolderName = GUILayout.TextField(menu.NewFolderName ?? string.Empty);
-            if (GUILayout.Button(LC("Create"), GUILayout.Width(58)))
+            if (GUILayout.Button(
+                    LC("Create"),
+                    GetSelectorContextMenuButtonStyle(),
+                    GUILayout.Width(86f),
+                    GUILayout.Height(28f)))
             {
                 if (CreateSelectorCustomFolder(menu.Scope, menu.NewFolderName) != null)
                 {
@@ -3725,6 +3809,7 @@ namespace StudioCharaEditor
         {
             lastSelectedTreeNode = newSel;
             ociTarget = GetOCICharFromNode(newSel);
+            RefreshMainGameAdvancedBoneModForSelection();
             CloseSelectorSidePanel();
             ClearSelectorCache();
             //Console.WriteLine("Select change to {0}", ociTarget);
@@ -4581,7 +4666,12 @@ namespace StudioCharaEditor
             float thumbListMaxH = Math.Max(thumbListMinH, fullh * 0.82f);
             int thumbShowBefore = 1;
             int thumbShowAfter = (int)Math.Ceiling(thumbListMaxH / thumbRowHeight) + 2;
-            bool thumbList = name != "Acc Parent" && name != "Acc Category";
+            // Main Game UI passes a localized/display name (for example
+            // "Category") here. Determine selector behaviour from the stable
+            // detail key instead, otherwise Acc Category is mistaken for a
+            // thumbnail selector and opens the broken accessory grid.
+            string rawSelectorName = GetDetailName(dInfo.DetailDefine.Key);
+            bool thumbList = rawSelectorName != "Acc Parent" && rawSelectorName != "Acc Category";
             bool showSmallThumbMode = StudioCharaEditor.ShowSelectedThumb.Value;
             bool unexpandOnSelect = StudioCharaEditor.CloseListAfterSelect.Value;
             bool inSearching = false;
@@ -5440,28 +5530,7 @@ namespace StudioCharaEditor
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(LC("Capture Thumbnail Photo"), btnstyle))
             {
-                int capW = 640;
-                int capH = 360;
-                int savW = 504;
-                int savH = 704;
-
-                byte[] capBuf = Studio.Studio.Instance.gameScreenShot.CreatePngScreen(capW, capH);
-
-                Texture2D capTex = new Texture2D(2, 2, TextureFormat.ARGB32, false);
-                capTex.LoadImage(capBuf);
-                Color[] capPixels = capTex.GetPixels((1280 - savW) / 2, (720 - savH) / 2, savW, savH, 0);
-
-                Texture2D newSavingTexture = new Texture2D(savW, savH);
-                newSavingTexture.SetPixels(capPixels);
-                newSavingTexture.Apply();
-                SetSavingTexture(newSavingTexture);
-                Destroy(capTex);
-
-                // shink size
-                if (!StudioCharaEditor.DoubleThumbnailSize.Value)
-                {
-                    TextureScale.Bilinear(savingTexture, savW / 2, savH / 2);
-                }
+                SetSavingTexture(CaptureSavingThumbnailPhoto());
             }
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
@@ -5509,7 +5578,11 @@ namespace StudioCharaEditor
                         //CharaEditorMgr.SetMakerApiInsideMaker(true);
                         //CharaEditorMgr.SetCustomBase(savingChara.charInfo);
 
-                        savingChaFile.coordinate.SaveFile(filename, (int)Manager.GameSystem.Instance.language);
+                        SaveMainGameCoordinateWithPluginData(
+                            savingChara.charInfo,
+                            savingChaFile.coordinate,
+                            filename,
+                            (int)Manager.GameSystem.Instance.language);
                         mainGameCoordinateCardsNeedRefresh = true;
                         StudioCharaEditor.Logger.Log(LogLevel.Message | LogLevel.Warning, string.Format("Charactor {0}'s coordinate saved to {1}.", savingChaFile.parameter.fullname, validCoordName));
                         guiMode = GuiModeType.MAIN;
@@ -6836,6 +6909,60 @@ namespace StudioCharaEditor
             savingTexture = texture;
         }
 
+        private Texture2D CaptureSavingThumbnailPhoto()
+        {
+            const int captureWidth = 640;
+            const int captureHeight = 360;
+            const int savedWidth = 504;
+            const int savedHeight = 704;
+
+            byte[] captureBytes = Studio.Studio.Instance.gameScreenShot.CreatePngScreen(
+                captureWidth,
+                captureHeight);
+            Texture2D captureTexture = new Texture2D(2, 2, TextureFormat.ARGB32, false);
+            try
+            {
+                if (!captureTexture.LoadImage(captureBytes))
+                {
+                    throw new InvalidDataException("Studio did not return a valid thumbnail image.");
+                }
+                float targetAspect = savedWidth / (float)savedHeight;
+                int cropHeight = captureTexture.height;
+                int cropWidth = Mathf.RoundToInt(cropHeight * targetAspect);
+                if (cropWidth > captureTexture.width)
+                {
+                    cropWidth = captureTexture.width;
+                    cropHeight = Mathf.RoundToInt(cropWidth / targetAspect);
+                }
+                int cropX = Math.Max(0, (captureTexture.width - cropWidth) / 2);
+                int cropY = Math.Max(0, (captureTexture.height - cropHeight) / 2);
+                Color[] pixels = captureTexture.GetPixels(
+                    cropX,
+                    cropY,
+                    cropWidth,
+                    cropHeight,
+                    0);
+                Texture2D result = new Texture2D(cropWidth, cropHeight);
+                result.SetPixels(pixels);
+                result.Apply();
+                int outputWidth = StudioCharaEditor.DoubleThumbnailSize.Value
+                    ? savedWidth
+                    : savedWidth / 2;
+                int outputHeight = StudioCharaEditor.DoubleThumbnailSize.Value
+                    ? savedHeight
+                    : savedHeight / 2;
+                if (result.width != outputWidth || result.height != outputHeight)
+                {
+                    TextureScale.Bilinear(result, outputWidth, outputHeight);
+                }
+                return result;
+            }
+            finally
+            {
+                Destroy(captureTexture);
+            }
+        }
+
         private static string GetDetailName(string detailKey)
         {
             char keySeparator = CharaEditorController.KEY_SEP_CHAR[0];
@@ -6913,8 +7040,34 @@ namespace StudioCharaEditor
         {
             if (curLocalizationDict != null && curLocalizationDict.ContainsKey(org) && !string.IsNullOrWhiteSpace(curLocalizationDict[org]))
                 return curLocalizationDict[org];
-            else
+
+            string language = StudioCharaEditor.UILanguage?.Value ?? "default";
+            if (string.IsNullOrEmpty(org))
+            {
                 return org;
+            }
+            if (!string.Equals(autoLocalizationLanguage, language, StringComparison.Ordinal))
+            {
+                autoLocalizationCache.Clear();
+                autoLocalizationLanguage = language;
+            }
+            if (autoLocalizationCache.TryGetValue(org, out string cached))
+            {
+                return cached;
+            }
+
+            string translated = null;
+            try
+            {
+                KKAPI.Utilities.TranslationHelper.TryTranslate(org, out translated);
+            }
+            catch
+            {
+                translated = null;
+            }
+            string result = string.IsNullOrWhiteSpace(translated) ? org : translated;
+            autoLocalizationCache[org] = result;
+            return result;
         }
 
         private static int CompareSlotNo(string x, string y)
