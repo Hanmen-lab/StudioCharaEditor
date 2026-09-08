@@ -175,7 +175,81 @@ namespace StudioCharaEditor
 
     class CharaDetailSet
     {
+        private static readonly string[] ExpressiveMaleHeadBundles =
+        {
+            "chara/Pandarinka/expressive_male_face.unity3d",
+            // Keep development builds compatible with the same skin routing.
+            "chara/Pandarinka/hanmen_dblin_male.unity3d"
+        };
+
         #region UPDATE_UTIL
+        private static int GetFaceSkinCompatibilityHeadId(ChaControl chaCtrl)
+        {
+            int headId = chaCtrl?.fileFace?.headId ?? 0;
+            if (chaCtrl == null || chaCtrl.sex != 0 || chaCtrl.lstCtrl == null)
+            {
+                return headId;
+            }
+
+            try
+            {
+                ListInfoBase headInfo = chaCtrl.lstCtrl.GetListInfo(
+                    ChaListDefine.CategoryNo.mo_head,
+                    headId);
+                string mainBundle = headInfo?.GetInfo(
+                    ChaListDefine.KeyType.MainAB);
+                if (IsExpressiveMaleHeadBundle(mainBundle))
+                {
+                    // This standalone head uses the same UV/material layout as
+                    // the ordinary male head. Reuse its complete skin catalog
+                    // instead of showing only skin rows duplicated for the
+                    // standalone HeadID.
+                    return 0;
+                }
+            }
+            catch (Exception exception)
+            {
+                if (StudioCharaEditor.VerboseMessage.Value)
+                {
+                    StudioCharaEditor.Logger?.LogWarning(
+                        "Failed to resolve face skin compatibility: " +
+                        exception.Message);
+                }
+            }
+
+            return headId;
+        }
+
+        private static bool IsExpressiveMaleHead(ChaControl chaCtrl, int headId)
+        {
+            if (chaCtrl == null || chaCtrl.sex != 0 || chaCtrl.lstCtrl == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                ListInfoBase headInfo = chaCtrl.lstCtrl.GetListInfo(
+                    ChaListDefine.CategoryNo.mo_head,
+                    headId);
+                return IsExpressiveMaleHeadBundle(
+                    headInfo?.GetInfo(ChaListDefine.KeyType.MainAB));
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        private static bool IsExpressiveMaleHeadBundle(string mainBundle)
+        {
+            string normalized = mainBundle?.Replace('\\', '/');
+            return ExpressiveMaleHeadBundles.Any(bundle => string.Equals(
+                normalized,
+                bundle,
+                StringComparison.OrdinalIgnoreCase));
+        }
+
         public static Vector4 updateLayout(Vector4 orgVec4, string dim, float value)
         {
             switch (dim)
@@ -318,7 +392,7 @@ namespace StudioCharaEditor
             yield return chaCtrl.ChangeClothesAsync(clothIndex, id, false, false);
             PluginBetterPenetration.AfterClothesReload(bpState);
             PluginHooahComponents.ScheduleRebindDickColliders(chaCtrl);
-            cec.UpdateDetailInfo_ClothType(clothName);
+            cec.RefreshDetailInfo_ClothType(clothName);
         }
 
         private static readonly HashSet<long> clothCustomTextureInitTried = new HashSet<long>();
@@ -981,7 +1055,25 @@ namespace StudioCharaEditor
                 Key = "Face#FaceType#FaceType",
                 Type = CharaDetailDefine.CharaDetailDefineType.SELECTOR,
                 Get = (chaCtrl) => { return chaCtrl.fileFace.headId; },
-                Set = (chaCtrl, v) => { chaCtrl.ChangeHead((int)v, false); },
+                Set = (chaCtrl, v) => {
+                    int headId = (int)v;
+                    if (chaCtrl.fileFace.headId == headId)
+                    {
+                        return;
+                    }
+
+                    GameObject previousHead = chaCtrl.objHead;
+                    PluginHSPE.HeadChangeSnapshot snapshot =
+                        PluginHSPE.CaptureHeadChangeSnapshot(chaCtrl);
+                    bool restoreFaceSkin = IsExpressiveMaleHead(chaCtrl, headId);
+                    chaCtrl.ChangeHead(headId, false);
+                    PluginHSPE.ScheduleHeadRefresh(
+                        chaCtrl,
+                        headId,
+                        previousHead,
+                        snapshot,
+                        restoreFaceSkin);
+                },
                 SelectorList = (chaCtrl) => {return CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mo_head : ChaListDefine.CategoryNo.fo_head, ChaListDefine.KeyType.Unknown); },
             },
             new CharaDetailDefine
@@ -993,7 +1085,8 @@ namespace StudioCharaEditor
                 Upd = (chaCtrl) => { chaCtrl.CreateFaceTexture(); },
                 SelectorList = (chaCtrl) => {
                     List<CustomSelectInfo> list = CvsBase.CreateSelectList((chaCtrl.sex == 0) ? ChaListDefine.CategoryNo.mt_skin_f : ChaListDefine.CategoryNo.ft_skin_f, ChaListDefine.KeyType.HeadID);
-                    list = (from x in list where x.limitIndex == chaCtrl.fileFace.headId select x).ToList<CustomSelectInfo>();
+                    int compatibleHeadId = GetFaceSkinCompatibilityHeadId(chaCtrl);
+                    list = (from x in list where x.limitIndex == compatibleHeadId select x).ToList<CustomSelectInfo>();
                     return list;
                 },
             },
@@ -2850,7 +2943,7 @@ namespace StudioCharaEditor
                         chaCtrl.chaFile.coordinate.clothes.parts[clothIndex].colorInfo[colorIndex].pattern = (int)v;
                         updateClothColorTexture(chaCtrl, clothIndex, true, colorIndex);
                         // update cloth type
-                        cec.UpdateDetailInfo_ClothType(clothName);
+                        cec.RefreshDetailInfo_ClothType(clothName);
                     },
                     SelectorList = (chaCtrl) => { return CvsBase.CreateSelectList(ChaListDefine.CategoryNo.st_pattern); },
                 };

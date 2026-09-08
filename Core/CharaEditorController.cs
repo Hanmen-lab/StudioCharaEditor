@@ -856,15 +856,26 @@ namespace StudioCharaEditor
 
         public void UpdateDetailInfo_ClothType(string category2)
         {
+            RefreshDetailInfo_ClothType(category2);
+        }
+
+        internal void RefreshDetailInfo_ClothType(string category2)
+        {
             // when cloth type changed, 
             if (myCategorySet.ContainsKey(CT1_CTHS) && myCategorySet[CT1_CTHS].Contains(category2))
             {
-                // Clothing Lab expands the male editor with female clothing
-                // categories and replaces the Type selector provider. This
-                // method rebuilds that selector after every clothing change,
-                // so the integration has to be applied again afterwards.
-                PluginPandarinkaToolkit.PrepareMaleCategories();
                 string setName = CT1_CTHS + "#" + category2;
+                string typeKey = setName + "#" + category2 + " Type";
+                CharaDetailInfo existingType = null;
+                for (int detailIndex = 0; detailIndex < myDetailSet[setName].Count; detailIndex++)
+                {
+                    CharaDetailInfo candidate = myDetailSet[setName][detailIndex];
+                    if (string.Equals(candidate.DetailDefine.Key, typeKey, StringComparison.Ordinal))
+                    {
+                        existingType = candidate;
+                        break;
+                    }
+                }
                 Dictionary<string, object> revData = new Dictionary<string, object>();
                 // delete old entry form myDetailDict
                 foreach (var cdi in myDetailSet[setName])
@@ -879,7 +890,14 @@ namespace StudioCharaEditor
                 int clothIndex = Array.IndexOf(FEMALE_CLOTHES_NAME, category2);
                 foreach (CharaDetailDefine cdd in CharaDetailSet.ClothDetailBuilder(ociTarget.charInfo, clothIndex))
                 {
-                    CharaDetailInfo cdi = new CharaDetailInfo(ociTarget.charInfo, cdd);
+                    // Clothing Lab replaces the existing Type provider with its
+                    // cross-gender cached provider. Keep that detail object when
+                    // rebuilding color/options so selecting one item does not
+                    // discard and regenerate the entire female clothing list.
+                    CharaDetailInfo cdi = existingType != null &&
+                                          string.Equals(cdd.Key, typeKey, StringComparison.Ordinal)
+                        ? existingType
+                        : new CharaDetailInfo(ociTarget.charInfo, cdd);
                     if (revData.ContainsKey(cdd.Key))
                     {
                         cdi.RevertValue = revData[cdd.Key];
@@ -887,8 +905,13 @@ namespace StudioCharaEditor
                     myDetailSet[setName].Add(cdi);
                     myDetailDict[cdd.Key] = cdi;
                 }
-                PluginPandarinkaToolkit.ConfigureController(this);
-                InvalidateListCaches();
+                InvalidateDetailInfoListCache(setName);
+                if (existingType == null)
+                {
+                    // Compatibility fallback for an older Toolkit without the
+                    // Studio controller hook.
+                    PluginPandarinkaToolkit.ConfigureController(this);
+                }
             }
         }
 
@@ -952,7 +975,7 @@ namespace StudioCharaEditor
             if (updateColor)
             {
                 CharaDetailSet.updateClothCustomTexture(chaCtrl, partIndex, true, updatePtn1, updatePtn2, updatePtn3);
-                UpdateDetailInfo_ClothType(category2);
+                RefreshDetailInfo_ClothType(category2);
             }
 
             return updateColor;

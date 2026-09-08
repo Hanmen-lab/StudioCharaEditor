@@ -49,6 +49,7 @@ namespace StudioCharaEditor
         private TreeNodeObject lastSelectedTreeNode;
         private OCIChar ociTarget;
         private Dictionary<string, object> clipboard;
+        private PluginMaterialEditorClipboard.HairSnapshot hairMaterialEditorClipboard;
         private List<AccessoryDetailInfo> accSlotClipboard = new List<AccessoryDetailInfo>();
         private List<string> accSlotMultiSelection = new List<string>();
         private bool copySlotAutoArrange = true;
@@ -69,6 +70,8 @@ namespace StudioCharaEditor
         private readonly Dictionary<string, Dictionary<int, int>> selectorIndexPool = new Dictionary<string, Dictionary<int, int>>();
         private readonly Dictionary<string, SelectorRenderRange> selectorRenderRangePool = new Dictionary<string, SelectorRenderRange>();
         private readonly Dictionary<string, SelectorSearchState> selectorSearchPool = new Dictionary<string, SelectorSearchState>();
+        private readonly Dictionary<CustomSelectInfo, string> selectorSearchTextCache =
+            new Dictionary<CustomSelectInfo, string>();
         private readonly Dictionary<string, ColorSwatch> colorSwatchPool = new Dictionary<string, ColorSwatch>();
         private readonly Dictionary<string, string> selectorTranslationMap = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> selectorTranslationLookupCache = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -136,6 +139,8 @@ namespace StudioCharaEditor
         private const float ColorDragApplyInterval = 0.06f;
         private const float SelectorSearchDelay = 0.25f;
         private const int SelectorSearchBatchSize = 120;
+        private const int SelectorSearchMinimumBatchSize = 8;
+        private const double SelectorSearchFrameBudgetMilliseconds = 1.5d;
         private const int MaxSelectorRowsPerFrame = 20;
         private const int MaxSelectorGridCellsPerFrame = 48;
         private const int MaxSelectorThumbLoadsPerFrame = 1;
@@ -194,6 +199,8 @@ namespace StudioCharaEditor
         private bool selectorCustomFoldersLoaded;
         private bool selectorCustomFolderScopesMigrated;
         private bool selectorTranslationsLoaded;
+        private bool selectorTranslationsLoadStarted;
+        private Task<Dictionary<string, string>> selectorTranslationsLoadTask;
         private int selectorFavoriteVersion;
         private int selectorCustomFolderVersion;
         private bool selectorWindowHasUserSize;
@@ -310,6 +317,7 @@ namespace StudioCharaEditor
             public SelectorContextMenuType Type;
             public Rect Rect;
             public Vector2 Position;
+            public Vector2 Scroll;
             public string Scope;
             public string FolderKey;
             public string FolderName;
@@ -1130,6 +1138,8 @@ namespace StudioCharaEditor
         {
             FlushPendingColorChanges(false);
             ProcessQueuedSelectorDiskThumbnailLoad();
+            EnsureSelectorTranslationsLoaded();
+            CompleteSelectorTranslationLoad();
 
             // hotkey check
             if (StudioCharaEditor.KeyShowUI.Value.IsDown())
@@ -1369,17 +1379,31 @@ namespace StudioCharaEditor
                 state.LastBuildFrame != Time.frameCount)
             {
                 state.LastBuildFrame = Time.frameCount;
-                int endIndex = Math.Min(infoCount, state.NextIndex + SelectorSearchBatchSize);
-                for (int i = state.NextIndex; i < endIndex; i++)
+                long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+                int processed = 0;
+                while (state.NextIndex < infoCount && processed < SelectorSearchBatchSize)
                 {
+                    int i = state.NextIndex;
                     int infoIndex = sourceIndices != null ? sourceIndices[i] : i;
                     if (infoIndex >= 0 && infoIndex < infoList.Count && SelectorMatchesSearch(infoList[infoIndex], true, searchText))
                     {
                         state.Matches.Add(infoIndex);
                     }
+
+                    state.NextIndex++;
+                    processed++;
+                    if (processed >= SelectorSearchMinimumBatchSize)
+                    {
+                        double elapsedMilliseconds =
+                            (System.Diagnostics.Stopwatch.GetTimestamp() - startedAt) * 1000d /
+                            System.Diagnostics.Stopwatch.Frequency;
+                        if (elapsedMilliseconds >= SelectorSearchFrameBudgetMilliseconds)
+                        {
+                            break;
+                        }
+                    }
                 }
 
-                state.NextIndex = endIndex;
                 state.Complete = state.NextIndex >= infoCount;
             }
 
@@ -2477,8 +2501,14 @@ namespace StudioCharaEditor
                 return;
             }
 
-            const float menuWidth = 220f;
-            float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item ? 260f : 210f;
+            const float menuWidth = 240f;
+            float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item
+                ? Mathf.Clamp(
+                    270f + Math.Min(8, GetCustomFolders(selectorContextMenu.Scope).Count) * 28f,
+                    320f,
+                    Math.Max(320f, containerHeight - 32f))
+                : 230f;
+            menuHeight = Math.Min(menuHeight, Math.Max(180f, containerHeight - 32f));
             Vector2 menuPosition = GUIUtility.ScreenToGUIPoint(selectorContextMenu.Position);
             float x = Mathf.Clamp(menuPosition.x, 4f, Math.Max(4f, containerWidth - menuWidth - 4f));
             float y = Mathf.Clamp(menuPosition.y, 24f, Math.Max(24f, containerHeight - menuHeight - 4f));
@@ -2563,6 +2593,15 @@ namespace StudioCharaEditor
 
             GUILayout.Label(LC("Folders"), GUI.skin.box);
             List<SelectorCustomFolder> folders = GetCustomFolders(menu.Scope);
+            menu.Scroll = GUILayout.BeginScrollView(
+                menu.Scroll,
+                false,
+                true,
+                GUIStyle.none,
+                GUI.skin.verticalScrollbar,
+                GUIStyle.none,
+                GUILayout.MinHeight(54f),
+                GUILayout.ExpandHeight(true));
             for (int i = 0; i < folders.Count; i++)
             {
                 SelectorCustomFolder folder = folders[i];
@@ -2583,6 +2622,7 @@ namespace StudioCharaEditor
                     SaveSelectorCustomFolders();
                 }
             }
+            GUILayout.EndScrollView();
 
             GUILayout.BeginHorizontal();
             menu.NewFolderName = GUILayout.TextField(menu.NewFolderName ?? string.Empty);
@@ -3483,13 +3523,20 @@ namespace StudioCharaEditor
                 return string.Empty;
             }
 
+            if (selectorSearchTextCache.TryGetValue(info, out string cached))
+            {
+                return cached;
+            }
+
             string translated = GetSelectorTranslatedName(info.name);
-            return string.Join(" ", new[]
+            string searchText = string.Join(" ", new[]
             {
                 info.id.ToString(),
                 info.name ?? string.Empty,
                 translated ?? string.Empty
             });
+            selectorSearchTextCache[info] = searchText;
+            return searchText;
         }
 
         private string GetSelectorTranslatedName(string sourceName)
@@ -3518,40 +3565,75 @@ namespace StudioCharaEditor
 
         private void EnsureSelectorTranslationsLoaded()
         {
-            if (selectorTranslationsLoaded)
+            if (selectorTranslationsLoaded || selectorTranslationsLoadStarted)
             {
                 return;
             }
 
-            selectorTranslationsLoaded = true;
+            selectorTranslationsLoadStarted = true;
             string textPath = Path.Combine(Paths.BepInExRootPath, "Translation", "en", "Text");
             if (!Directory.Exists(textPath))
             {
+                selectorTranslationsLoaded = true;
                 return;
             }
 
-            try
+            selectorTranslationsLoadTask = Task.Run(() =>
             {
-                foreach (string file in Directory.EnumerateFiles(textPath, "*.txt", SearchOption.AllDirectories))
+                Dictionary<string, string> result =
+                    new Dictionary<string, string>(StringComparer.Ordinal);
+                try
                 {
-                    foreach (string line in File.ReadLines(file))
+                    foreach (string file in Directory.EnumerateFiles(textPath, "*.txt", SearchOption.AllDirectories))
                     {
-                        AddSelectorTranslationLine(line);
+                        foreach (string line in File.ReadLines(file))
+                        {
+                            AddSelectorTranslationLine(result, line);
+                        }
+                    }
+                }
+                catch
+                {
+                    // The main thread reports the task failure, if any. A
+                    // partially read dictionary is still useful for search.
+                }
+                return result;
+            });
+        }
+
+        private void CompleteSelectorTranslationLoad()
+        {
+            Task<Dictionary<string, string>> task = selectorTranslationsLoadTask;
+            if (selectorTranslationsLoaded || task == null || !task.IsCompleted)
+            {
+                return;
+            }
+
+            selectorTranslationsLoadTask = null;
+            selectorTranslationsLoaded = true;
+            if (task.Status == TaskStatus.RanToCompletion && task.Result != null)
+            {
+                foreach (KeyValuePair<string, string> pair in task.Result)
+                {
+                    if (!selectorTranslationMap.ContainsKey(pair.Key))
+                    {
+                        selectorTranslationMap.Add(pair.Key, pair.Value);
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                if (StudioCharaEditor.VerboseMessage.Value)
-                {
-                    StudioCharaEditor.Logger?.LogWarning("Failed to load XUnity translation cache for selector search: " + ex.Message);
-                }
-            }
+
+            selectorTranslationLookupCache.Clear();
+            selectorSearchTextCache.Clear();
+            selectorSearchPool.Clear();
         }
 
-        private void AddSelectorTranslationLine(string line)
+        private static void AddSelectorTranslationLine(
+            Dictionary<string, string> target,
+            string line)
         {
-            if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith("//", StringComparison.Ordinal))
+            if (target == null ||
+                string.IsNullOrWhiteSpace(line) ||
+                line.TrimStart().StartsWith("//", StringComparison.Ordinal))
             {
                 return;
             }
@@ -3572,9 +3654,9 @@ namespace StudioCharaEditor
             }
 
             string key = NormalizeSelectorTranslationKey(source);
-            if (!selectorTranslationMap.ContainsKey(key))
+            if (!target.ContainsKey(key))
             {
-                selectorTranslationMap.Add(key, translated);
+                target.Add(key, translated);
             }
         }
 
@@ -4089,7 +4171,7 @@ namespace StudioCharaEditor
                             tgtKeys.Add(cdi.DetailDefine.Key);
                         }
                     }
-                    clipboard = cec.GetDataDictByKeys(tgtKeys.ToArray());
+                    StoreCharacterClipboard(cec, cec.GetDataDictByKeys(tgtKeys.ToArray()));
                 }
                 GUILayout.EndVertical();
                 GUILayout.EndVertical();
@@ -4375,7 +4457,7 @@ namespace StudioCharaEditor
                                 {
                                     tgtKeys.Add(dInfo.DetailDefine.Key);
                                 }
-                                clipboard = cec.GetDataDictByKeys(tgtKeys.ToArray());
+                                StoreCharacterClipboard(cec, cec.GetDataDictByKeys(tgtKeys.ToArray()));
                             }
                             if (GUILayout.Button(LC("Copy Select")))
                             {
@@ -4388,7 +4470,7 @@ namespace StudioCharaEditor
                             }
                             if (pageClipboard.Count > 0 && GUILayout.Button(LC("Paste Page")))
                             {
-                                cec.SetDataDict(pageClipboard);
+                                ApplyCharacterClipboard(cec, pageClipboard);
                             }
                             if (pageClipboard.Count > 0 && GUILayout.Button(LC("Paste Select")))
                             {
@@ -4432,7 +4514,7 @@ namespace StudioCharaEditor
                                         tgtKeys.Add(dkey);
                                     }
                                 }
-                                clipboard = cec.GetDataDictByKeys(tgtKeys.ToArray());
+                                StoreCharacterClipboard(cec, cec.GetDataDictByKeys(tgtKeys.ToArray()));
                                 detailPageSelect = SelectMode.Normal;
                             }
                             if (GUILayout.Button(LC("Cancel")))
@@ -4452,7 +4534,7 @@ namespace StudioCharaEditor
                                         pageSelClipboard[dkey] = pageClipboard[dkey];
                                     }
                                 }
-                                cec.SetDataDict(pageSelClipboard);
+                                ApplyCharacterClipboard(cec, pageSelClipboard);
                                 detailPageSelect = SelectMode.Normal;
                             }
                             if (GUILayout.Button(LC("Cancel")))
@@ -4476,14 +4558,14 @@ namespace StudioCharaEditor
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button(LC("Copy All"), btnstyle, GUILayout.Width(cbwidth)))
                 {
-                    clipboard = cec.GetDataDictFull();
+                    StoreCharacterClipboard(cec, cec.GetDataDictFull());
                 }
                 bool canPaste = clipboard != null;
                 bool oldEnabled = GUI.enabled;
                 GUI.enabled = oldEnabled && canPaste;
                 if (GUILayout.Button(LC("Paste All"), btnstyle, GUILayout.Width(cbwidth)))
                 {
-                    cec.SetDataDict(clipboard);
+                    ApplyCharacterClipboard(cec, clipboard);
                 }
                 GUI.enabled = oldEnabled;
                 if (GUILayout.Button(LC("Revert All"), btnstyle, GUILayout.Width(cbwidth)))
@@ -4738,7 +4820,7 @@ namespace StudioCharaEditor
                 if (id != oldId)
                 {
                     dInfo.DetailDefine.Set(chaCtrl, id);
-                    ClearSelectorCache();
+                    RefreshSelectorCachesAfterSelection(chaCtrl, selectorKey);
                     if (dInfo.DetailDefine.Upd != null && !LaterUpdate) dInfo.DetailDefine.Upd(chaCtrl);
                 }
             }
@@ -5740,6 +5822,73 @@ namespace StudioCharaEditor
                 selectorIndexPool[selectorKey] = indexById;
             }
             return infoList;
+        }
+
+        private void StoreCharacterClipboard(
+            CharaEditorController controller,
+            Dictionary<string, object> data)
+        {
+            clipboard = data;
+            HashSet<int> hairSlots = GetHairClipboardSlots(data?.Keys);
+            hairMaterialEditorClipboard = hairSlots.Count == 0
+                ? null
+                : PluginMaterialEditorClipboard.Capture(
+                    controller?.ociTarget?.charInfo,
+                    hairSlots);
+        }
+
+        private void ApplyCharacterClipboard(
+            CharaEditorController controller,
+            Dictionary<string, object> data)
+        {
+            if (controller == null || data == null)
+            {
+                return;
+            }
+
+            HashSet<int> hairSlots = GetHairClipboardSlots(data.Keys);
+            controller.SetDataDict(data);
+            if (hairSlots.Count > 0 && hairMaterialEditorClipboard != null)
+            {
+                PluginMaterialEditorClipboard.ScheduleRestore(
+                    controller.ociTarget?.charInfo,
+                    hairMaterialEditorClipboard,
+                    hairSlots);
+            }
+        }
+
+        private static HashSet<int> GetHairClipboardSlots(IEnumerable<string> keys)
+        {
+            HashSet<int> slots = new HashSet<int>();
+            if (keys == null)
+            {
+                return slots;
+            }
+
+            foreach (string key in keys)
+            {
+                if (key == null || !key.StartsWith("Hair#", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (key.StartsWith("Hair#BackHair#", StringComparison.Ordinal))
+                {
+                    slots.Add(0);
+                }
+                else if (key.StartsWith("Hair#FrontHair#", StringComparison.Ordinal))
+                {
+                    slots.Add(1);
+                }
+                else if (key.StartsWith("Hair#SideHair#", StringComparison.Ordinal))
+                {
+                    slots.Add(2);
+                }
+                else if (key.StartsWith("Hair#ExtensionHair#", StringComparison.Ordinal))
+                {
+                    slots.Add(3);
+                }
+            }
+            return slots;
         }
 
         private Texture2D GetSelectorThumbTexture(string name, CustomSelectInfo info)
@@ -6826,6 +6975,7 @@ namespace StudioCharaEditor
             selectorIndexPool.Clear();
             selectorRenderRangePool.Clear();
             selectorSearchPool.Clear();
+            selectorSearchTextCache.Clear();
 
             if (selectorSidePanel != null)
             {
@@ -6834,6 +6984,33 @@ namespace StudioCharaEditor
                 selectorSidePanel.FolderCustomVersion = -1;
                 selectorSidePanel.Folders?.Clear();
             }
+        }
+
+        private void RefreshSelectorCachesAfterSelection(
+            ChaControl character,
+            string selectorKey)
+        {
+            // Clothing Lab's male selectors combine the native male list with
+            // all compatible female entries. Rebuilding that list immediately
+            // after every selection is expensive and previously happened from
+            // inside OnGUI. Selecting an item does not change the list itself,
+            // so retain its list/index cache and only discard calculated rows.
+            bool preserveClothingLabList = character != null &&
+                                            character.sex == 0 &&
+                                            !string.IsNullOrEmpty(selectorKey) &&
+                                            selectorKey.StartsWith(
+                                                "Clothes#",
+                                                StringComparison.Ordinal) &&
+                                            selectorKey.EndsWith(
+                                                " Type",
+                                                StringComparison.Ordinal);
+            if (preserveClothingLabList)
+            {
+                ClearSelectorRuntimeCache(selectorKey);
+                return;
+            }
+
+            ClearSelectorCache();
         }
 
         private void ClearSelectorRuntimeCache(string selectorKey)

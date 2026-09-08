@@ -302,6 +302,8 @@ namespace StudioCharaEditor
         private MainGameCoordinateFolderNode mainGameCoordinateFolderRoot;
         private string mainGameSelectedCoordinateFolder = string.Empty;
         private string mainGameCoordinateSearch = string.Empty;
+        private string mainGameCoordinateAppliedSearch = string.Empty;
+        private float mainGameCoordinateSearchChangedAt;
         private bool mainGameCoordinateSortNewest;
         private bool mainGameCoordinateFolderOpen;
         private GUIStyle mainGameCoordinateFolderStyle;
@@ -778,16 +780,20 @@ namespace StudioCharaEditor
                 return;
             }
 
-            const float menuWidth = 260f;
+            const float menuWidth = 280f;
+            float logicalHeight = Screen.height / GetActiveGuiScale();
             float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item
-                ? 300f
+                ? Mathf.Clamp(
+                    310f + Math.Min(8, GetCustomFolders(selectorContextMenu.Scope).Count) * 30f,
+                    360f,
+                    Math.Max(360f, logicalHeight - 16f))
                 : 240f;
+            menuHeight = Math.Min(menuHeight, Math.Max(220f, logicalHeight - 16f));
             if (selectorContextMenu.Rect.width != menuWidth ||
                 selectorContextMenu.Rect.height != menuHeight)
             {
                 Vector2 menuPosition = selectorContextMenu.Position;
                 float logicalWidth = Screen.width / GetActiveGuiScale();
-                float logicalHeight = Screen.height / GetActiveGuiScale();
                 selectorContextMenu.Rect = new Rect(
                     Mathf.Clamp(
                         menuPosition.x + 10f,
@@ -1390,16 +1396,19 @@ namespace StudioCharaEditor
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.MaterialEditorHair);
             }
-            bool hairShaderAvailable = FindLoadedType(
+            bool hairShaderSwapperAvailable = FindLoadedType(
+                "HS2_HairShaderSwapper.HairShaderSwapper") != null;
+            bool hairShaderPropertiesAvailable = FindLoadedType(
                 "HS2_HairShaderSwapper.HairShaderSwapperStudio") != null;
             bool oldEnabled = GUI.enabled;
-            GUI.enabled = oldEnabled && hairShaderAvailable;
+            GUI.enabled = oldEnabled && hairShaderSwapperAvailable;
             if (GUILayout.Button(
                     LC("Hair Shader Swapper"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.HairShaderSwapper)))
             {
                 OpenMainGameUtilityPage(MainGameUtilityPage.HairShaderSwapper);
             }
+            GUI.enabled = oldEnabled && hairShaderPropertiesAvailable;
             if (GUILayout.Button(
                     LC("Hair Shader Properties"),
                     GetMainGameUtilityEntryStyle(MainGameUtilityPage.HairShaderProperties)))
@@ -1780,13 +1789,13 @@ namespace StudioCharaEditor
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(LC("Copy All"), btnstyle))
             {
-                clipboard = controller.GetDataDictFull();
+                StoreCharacterClipboard(controller, controller.GetDataDictFull());
             }
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && clipboard != null;
             if (GUILayout.Button(LC("Paste All"), btnstyle))
             {
-                controller.SetDataDict(clipboard);
+                ApplyCharacterClipboard(controller, clipboard);
             }
             GUI.enabled = oldEnabled;
             GUILayout.EndHorizontal();
@@ -3286,6 +3295,7 @@ namespace StudioCharaEditor
         private void DrawMainGameCoordinateCardsPage(bool allowSaveAndDelete)
         {
             EnsureMainGameCoordinateCards();
+            ApplyPendingMainGameCoordinateSearch();
             RebuildMainGameVisibleCoordinateCards();
 
             GUILayout.BeginHorizontal(GUILayout.Height(34f));
@@ -3346,8 +3356,7 @@ namespace StudioCharaEditor
             if (!string.Equals(nextSearch, mainGameCoordinateSearch, StringComparison.Ordinal))
             {
                 mainGameCoordinateSearch = nextSearch;
-                mainGameCoordinateFilterDirty = true;
-                mainGameCoordinateScroll = Vector2.zero;
+                mainGameCoordinateSearchChangedAt = Time.realtimeSinceStartup;
             }
             bool oldEnabled = GUI.enabled;
             GUI.enabled = oldEnabled && !string.IsNullOrEmpty(mainGameCoordinateSearch);
@@ -3358,6 +3367,7 @@ namespace StudioCharaEditor
                     GUILayout.Height(30f)))
             {
                 mainGameCoordinateSearch = string.Empty;
+                mainGameCoordinateAppliedSearch = string.Empty;
                 mainGameCoordinateFilterDirty = true;
                 mainGameCoordinateScroll = Vector2.zero;
                 GUI.FocusControl(string.Empty);
@@ -3370,6 +3380,7 @@ namespace StudioCharaEditor
                 DrawMainGameCoordinateFolderPanel();
             }
 
+            ApplyPendingMainGameCoordinateSearch();
             RebuildMainGameVisibleCoordinateCards();
 
             if (!string.IsNullOrEmpty(mainGameCoordinateCardStatus))
@@ -4330,7 +4341,7 @@ namespace StudioCharaEditor
             string folderPrefix = Path.GetFullPath(selectedFolder)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
                 Path.DirectorySeparatorChar;
-            string search = (mainGameCoordinateSearch ?? string.Empty).Trim();
+            string search = (mainGameCoordinateAppliedSearch ?? string.Empty).Trim();
 
             for (int index = 0; index < mainGameCoordinateCards.Count; index++)
             {
@@ -4380,6 +4391,27 @@ namespace StudioCharaEditor
                     }
                 }
             }
+        }
+
+        private void ApplyPendingMainGameCoordinateSearch()
+        {
+            if (string.Equals(
+                    mainGameCoordinateAppliedSearch,
+                    mainGameCoordinateSearch,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(mainGameCoordinateSearch) &&
+                Time.realtimeSinceStartup - mainGameCoordinateSearchChangedAt < SelectorSearchDelay)
+            {
+                return;
+            }
+
+            mainGameCoordinateAppliedSearch = mainGameCoordinateSearch ?? string.Empty;
+            mainGameCoordinateFilterDirty = true;
+            mainGameCoordinateScroll = Vector2.zero;
         }
 
         private void DrawMainGameCoordinateCardGrid()
@@ -5357,6 +5389,41 @@ namespace StudioCharaEditor
 
         private void DrawMainGameHairShaderSwapperPage()
         {
+            Type swapperType = FindLoadedType("HS2_HairShaderSwapper.HairShaderSwapper");
+            IList shaderEntries = GetMainGameStaticReflectionMember(
+                swapperType,
+                "HairShaderList") as IList;
+            if (swapperType != null && shaderEntries != null)
+            {
+                if (DrawMainGameFullWidthButton("Reset All"))
+                {
+                    TryInvokeMainGameHairShader(
+                        () => ApplyMainGameHairShaderToTarget(null, true),
+                        "reset the hair shader");
+                }
+                GUILayout.Space(5f);
+                for (int index = 0; index < shaderEntries.Count; index++)
+                {
+                    object entry = shaderEntries[index];
+                    string label = GetMainGameReflectionString(entry, "DisplayName") ??
+                                   ("Shader " + (index + 1));
+                    string shaderName = GetMainGameReflectionString(entry, "ShaderName");
+                    if (string.IsNullOrEmpty(shaderName))
+                    {
+                        continue;
+                    }
+                    if (DrawMainGameFullWidthButton(label))
+                    {
+                        string selectedShader = shaderName;
+                        TryInvokeMainGameHairShader(
+                            () => ApplyMainGameHairShaderToTarget(selectedShader, false),
+                            "change the hair shader");
+                    }
+                    GUILayout.Space(5f);
+                }
+                return;
+            }
+
             Type studioType = FindLoadedType("HS2_HairShaderSwapper.HairShaderSwapperStudio");
             if (!RefreshMainGameHairShaderControls(studioType))
             {
@@ -5386,6 +5453,201 @@ namespace StudioCharaEditor
                 }
                 GUILayout.Space(5f);
             }
+        }
+
+        private void ApplyMainGameHairShaderToTarget(string shaderName, bool reset)
+        {
+            ChaControl character = ociTarget?.charInfo;
+            Type controllerType = FindLoadedType(
+                "KK_Plugins.MaterialEditor.MaterialEditorCharaController");
+            Component materialEditor = controllerType == null || character == null
+                ? null
+                : character.GetComponent(controllerType);
+            if (materialEditor == null)
+            {
+                throw new InvalidOperationException(
+                    "Material Editor is not available on the selected character.");
+            }
+
+            Type objectType = controllerType.GetNestedType(
+                "ObjectType",
+                BindingFlags.Public | BindingFlags.NonPublic);
+            object hairObjectType = objectType == null ? null : Enum.Parse(objectType, "Hair");
+            object accessoryObjectType = objectType == null ? null : Enum.Parse(objectType, "Accessory");
+            string operationName = reset ? "RemoveMaterialShader" : "SetMaterialShader";
+            int currentParameterCount = reset ? 5 : 6;
+            int legacyParameterCount = currentParameterCount - 1;
+            MethodInfo operation = controllerType.GetMethods(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(method =>
+                    string.Equals(method.Name, operationName, StringComparison.Ordinal) &&
+                    (method.GetParameters().Length == currentParameterCount ||
+                     method.GetParameters().Length == legacyParameterCount))
+                .OrderByDescending(method => method.GetParameters().Length)
+                .FirstOrDefault();
+            if (operation == null || hairObjectType == null)
+            {
+                throw new MissingMethodException(
+                    controllerType.FullName,
+                    operationName);
+            }
+
+            int changed = 0;
+            if (character.cmpHair != null)
+            {
+                for (int slot = 0; slot < character.cmpHair.Length; slot++)
+                {
+                    CmpHair hair = character.cmpHair[slot];
+                    changed += ApplyMainGameHairShaderToRenderers(
+                        materialEditor,
+                        operation,
+                        slot,
+                        hairObjectType,
+                        hair?.rendHair,
+                        hair == null ? null : hair.gameObject,
+                        shaderName,
+                        reset);
+                }
+            }
+
+            if (accessoryObjectType != null && MainGameHairShaderSwapperIncludesAccessories())
+            {
+                int accessoryCount = PluginMoreAccessories.GetAccessoryCount(character);
+                for (int slot = 0; slot < accessoryCount; slot++)
+                {
+                    if (MainGameHairShaderSwapperExcludesAccessory(slot))
+                    {
+                        continue;
+                    }
+                    CmpAccessory accessory;
+                    try
+                    {
+                        accessory = PluginMoreAccessories.GetAccessoryCmp(character, slot);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                    if (accessory == null || !accessory.typeHair)
+                    {
+                        continue;
+                    }
+                    changed += ApplyMainGameHairShaderToRenderers(
+                        materialEditor,
+                        operation,
+                        slot,
+                        accessoryObjectType,
+                        accessory.rendNormal,
+                        accessory.gameObject,
+                        shaderName,
+                        reset);
+                }
+            }
+
+            if (changed == 0)
+            {
+                throw new InvalidOperationException(
+                    "No compatible hair materials were found on the selected character.");
+            }
+        }
+
+        private static int ApplyMainGameHairShaderToRenderers(
+            Component materialEditor,
+            MethodInfo operation,
+            int slot,
+            object objectType,
+            Renderer[] renderers,
+            GameObject root,
+            string shaderName,
+            bool reset)
+        {
+            if (root == null)
+            {
+                return 0;
+            }
+
+            List<Renderer> rendererTargets = new List<Renderer>();
+            HashSet<Renderer> seenRenderers = new HashSet<Renderer>();
+            if (renderers != null)
+            {
+                for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+                {
+                    Renderer renderer = renderers[rendererIndex];
+                    if (renderer != null && seenRenderers.Add(renderer))
+                    {
+                        rendererTargets.Add(renderer);
+                    }
+                }
+            }
+            Renderer[] childRenderers = root.GetComponentsInChildren<Renderer>(true);
+            for (int rendererIndex = 0; rendererIndex < childRenderers.Length; rendererIndex++)
+            {
+                Renderer renderer = childRenderers[rendererIndex];
+                if (renderer != null && seenRenderers.Add(renderer))
+                {
+                    rendererTargets.Add(renderer);
+                }
+            }
+
+            int changed = 0;
+            for (int rendererIndex = 0; rendererIndex < rendererTargets.Count; rendererIndex++)
+            {
+                Renderer renderer = rendererTargets[rendererIndex];
+                Material[] materials = renderer.materials;
+                for (int materialIndex = 0; materialIndex < materials.Length; materialIndex++)
+                {
+                    Material material = materials[materialIndex];
+                    if (material == null)
+                    {
+                        continue;
+                    }
+                    bool supportsImmediateApplyArgument = operation.GetParameters().Length ==
+                                                          (reset ? 5 : 6);
+                    object[] arguments;
+                    if (reset)
+                    {
+                        arguments = supportsImmediateApplyArgument
+                            ? new object[] { slot, objectType, material, root, true }
+                            : new object[] { slot, objectType, material, root };
+                    }
+                    else
+                    {
+                        arguments = supportsImmediateApplyArgument
+                            ? new object[] { slot, objectType, material, shaderName, root, true }
+                            : new object[] { slot, objectType, material, shaderName, root };
+                    }
+                    operation.Invoke(materialEditor, arguments);
+                    changed++;
+                }
+            }
+            return changed;
+        }
+
+        private static bool MainGameHairShaderSwapperIncludesAccessories()
+        {
+            Type pluginType = FindLoadedType(
+                "HS2_HairShaderSwapper.HairShaderSwapperPlugin");
+            object config = GetMainGameStaticReflectionMember(pluginType, "configAccHair");
+            object value = GetMainGameReflectionMember(config, "Value");
+            return value is bool enabled && enabled;
+        }
+
+        private static bool MainGameHairShaderSwapperExcludesAccessory(int slot)
+        {
+            Type pluginType = FindLoadedType(
+                "HS2_HairShaderSwapper.HairShaderSwapperPlugin");
+            object exclusions = GetMainGameStaticReflectionMember(
+                pluginType,
+                "SwapperAccExclusions");
+            MethodInfo contains = exclusions?.GetType().GetMethod(
+                "Contains",
+                BindingFlags.Instance | BindingFlags.Public,
+                null,
+                new[] { typeof(int) },
+                null);
+            return contains != null &&
+                   contains.Invoke(exclusions, new object[] { slot }) is bool excluded &&
+                   excluded;
         }
 
         private void DrawMainGameHairShaderPropertiesPage()
@@ -6556,6 +6818,20 @@ namespace StudioCharaEditor
             if (detailSetKey == "Body#ShapeWhole")
             {
                 DrawMainGameBodyOverallExtensions(controller.ociTarget?.charInfo, detailSet);
+            }
+            if (detailSetKey == "Body#Overlay" &&
+                controller.myDetailSet.ContainsKey("Face#Overlay"))
+            {
+                DrawMainGameDivider();
+                GUILayout.Label(LC("Face"), theme.MainGameSectionHeaderStyle);
+                CharaDetailInfo[] faceOverlayDetails = controller.GetDetailInfoList(
+                    CharaEditorController.CT1_FACE,
+                    "Overlay");
+                for (int index = 0; index < faceOverlayDetails.Length; index++)
+                {
+                    DrawMainGameDetailItem(faceOverlayDetails[index], "Face#Overlay");
+                    GUILayout.Space(3f);
+                }
             }
             if (isClothesColorPage && DrawMainGameFullWidthButton("Set all colors"))
             {
@@ -8874,9 +9150,10 @@ namespace StudioCharaEditor
             int selectedId = (int)detail.DetailDefine.Get(character);
             bool selectorGuiEnabledBeforeContextMenu = GUI.enabled;
             bool blockBehindContextMenu = false;
-            bool supportsFolders = selectorKey.StartsWith("Clothes#", StringComparison.Ordinal) &&
-                                   !rawName.StartsWith("Pattern ", StringComparison.Ordinal) &&
-                                   rawName.EndsWith(" Type", StringComparison.Ordinal);
+            // Every real thumbnail selector uses the same Favorites/custom-folder
+            // store as the classic UI. Structural accessory selectors and compact
+            // pattern pickers are handled by their dedicated renderers above/below.
+            bool supportsFolders = !rawName.StartsWith("Pattern ", StringComparison.Ordinal);
             SelectorSidePanel folderPanel = null;
             if (supportsFolders)
             {
@@ -8976,37 +9253,23 @@ namespace StudioCharaEditor
                     folderPanel.SelectedFolderKey = SelectorFolderAllKey;
                 }
             }
-            List<CustomSelectInfo> items = allItems;
             List<int> folderIndices = folderPanel == null
                 ? null
                 : GetSelectedFolderIndices(folderPanel);
-            if (folderIndices != null)
-            {
-                items = new List<CustomSelectInfo>(folderIndices.Count);
-                for (int index = 0; index < folderIndices.Count; index++)
-                {
-                    int itemIndex = folderIndices[index];
-                    if (itemIndex >= 0 && itemIndex < allItems.Count)
-                    {
-                        items.Add(allItems[itemIndex]);
-                    }
-                }
-            }
-            if (!string.IsNullOrWhiteSpace(searchText))
-            {
-                List<CustomSelectInfo> sourceItems = items;
-                items = new List<CustomSelectInfo>();
-                for (int index = 0; index < sourceItems.Count; index++)
-                {
-                    CustomSelectInfo item = sourceItems[index];
-                    string itemName = GetSelectorDisplayName(item);
-                    if (itemName.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        item.id.ToString().IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        items.Add(item);
-                    }
-                }
-            }
+            bool isSearching = !string.IsNullOrWhiteSpace(searchText);
+            string selectedFolderKey = folderPanel?.SelectedFolderKey ?? SelectorFolderAllKey;
+            string selectorFilterKey = selectorKey + "|MainGameFilter|" + selectedFolderKey;
+            SelectorSearchState searchState = isSearching
+                ? GetSelectorSearchState(
+                    selectorFilterKey,
+                    allItems,
+                    folderIndices,
+                    searchText)
+                : null;
+            List<int> visibleIndices = isSearching
+                ? searchState.Matches
+                : folderIndices;
+            int itemCount = visibleIndices?.Count ?? allItems.Count;
 
             const float gridGap = 8f;
             float preferredCellWidth = GetSelectorGridThumbnailSize() + 18f;
@@ -9026,7 +9289,7 @@ namespace StudioCharaEditor
             float rowGap = gridGap;
             float rowStride = cellHeight + rowGap;
             float viewportHeight = Math.Max(220f, mainGameRightRect.height * 0.66f);
-            int rowCount = Math.Max(1, (items.Count + columns - 1) / columns);
+            int rowCount = Math.Max(1, (itemCount + columns - 1) / columns);
             float contentHeight = rowCount * rowStride;
             float maximumScrollY = Math.Max(0f, contentHeight - viewportHeight);
             string scrollKey = selectorKey + "|MainGameGrid";
@@ -9036,7 +9299,18 @@ namespace StudioCharaEditor
             }
             if (scrollToSelected)
             {
-                int selectedIndex = items.FindIndex(item => item.id == selectedId);
+                int selectedIndex = -1;
+                for (int index = 0; index < itemCount; index++)
+                {
+                    int sourceIndex = visibleIndices == null ? index : visibleIndices[index];
+                    if (sourceIndex >= 0 &&
+                        sourceIndex < allItems.Count &&
+                        allItems[sourceIndex].id == selectedId)
+                    {
+                        selectedIndex = index;
+                        break;
+                    }
+                }
                 if (selectedIndex >= 0)
                 {
                     int selectedRow = selectedIndex / columns;
@@ -9057,12 +9331,13 @@ namespace StudioCharaEditor
                 mainGameVisibleSelectorKey = selectorKey;
             }
             Vector2 oldScroll = selectorScroll;
-            // Every thumbnail grid benefits from a dependable minimum thumb
-            // size. Hair Mesh selectors are the sole exception: Unity loses
-            // the end of their nested scroll range when the thumb is fixed.
+            // Unity loses the end of some nested scroll ranges when the thumb
+            // has a forced height. Mesh and Facial Type selectors need the
+            // native thumb calculation to retain their complete range.
             bool useLargePreviewThumb = !rawName.StartsWith(
                 "Mesh",
-                StringComparison.OrdinalIgnoreCase);
+                StringComparison.OrdinalIgnoreCase) &&
+                !selectorKey.StartsWith("Face#FaceType#", StringComparison.Ordinal);
             float previousThumbHeight = useLargePreviewThumb
                 ? BeginMainGameLargePreviewScrollbarThumb()
                 : -1f;
@@ -9097,16 +9372,26 @@ namespace StudioCharaEditor
                         GUILayout.Space(gridGap);
                     }
                     int itemIndex = row * columns + column;
-                    if (itemIndex < items.Count)
+                    if (itemIndex < itemCount)
                     {
-                        DrawMainGameSelectorCell(
-                            character,
-                            detail,
-                            items[itemIndex],
-                            selectedId,
-                            cellWidth,
-                            cellHeight,
-                            folderPanel);
+                        int sourceItemIndex = visibleIndices == null
+                            ? itemIndex
+                            : visibleIndices[itemIndex];
+                        if (sourceItemIndex >= 0 && sourceItemIndex < allItems.Count)
+                        {
+                            DrawMainGameSelectorCell(
+                                character,
+                                detail,
+                                allItems[sourceItemIndex],
+                                selectedId,
+                                cellWidth,
+                                cellHeight,
+                                folderPanel);
+                        }
+                        else
+                        {
+                            GUILayout.Space(cellWidth);
+                        }
                     }
                     else
                     {
@@ -9151,6 +9436,8 @@ namespace StudioCharaEditor
             {
                 searchWordPool[searchKey] = newSearch;
                 scrollPool[scrollKey] = Vector2.zero;
+                selectorThumbLoadPauseUntil =
+                    Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
             }
             if (GUILayout.Button(
                     LC("Reset"),
@@ -9160,6 +9447,8 @@ namespace StudioCharaEditor
             {
                 searchWordPool[searchKey] = string.Empty;
                 scrollPool[scrollKey] = Vector2.zero;
+                selectorThumbLoadPauseUntil =
+                    Time.realtimeSinceStartup + SelectorThumbLoadIdleDelay;
             }
             GUILayout.EndHorizontal();
 
@@ -9171,11 +9460,16 @@ namespace StudioCharaEditor
             CustomSelectInfo selectedItem = selectedItemIndex >= 0 && selectedItemIndex < allItems.Count
                 ? allItems[selectedItemIndex]
                 : null;
-            string sourceName = selectedItem == null
-                ? "Unknown"
-                : PluginSideloaderSource.GetZipmodFileName(selectedItem) ?? "Base game";
+            bool searchStillBuilding = isSearching && searchState != null && !searchState.Complete;
+            string sourceName = searchStillBuilding
+                ? LC("Searching") + "..."
+                : selectedItem == null
+                    ? "Unknown"
+                    : PluginSideloaderSource.GetZipmodFileName(selectedItem) ?? "Base game";
             GUILayout.Label(
-                new GUIContent("ZIPMOD: " + sourceName, sourceName),
+                new GUIContent(
+                    searchStillBuilding ? sourceName : "ZIPMOD: " + sourceName,
+                    sourceName),
                 GetMainGameSelectorSourceLabelStyle(),
                 GUILayout.Height(20f));
 
@@ -9194,6 +9488,16 @@ namespace StudioCharaEditor
             int columns = Math.Max(1, Mathf.FloorToInt((availableWidth + gap) / (112f + gap)));
             float buttonWidth = Math.Max(72f, (availableWidth - gap * (columns - 1)) / columns);
             GUILayout.BeginVertical(GUI.skin.box);
+            int rows = Math.Max(1, (panel.Folders.Count + columns - 1) / columns);
+            float folderViewportHeight = Math.Min(170f, rows * 35f + 4f);
+            panel.FolderScroll = GUILayout.BeginScrollView(
+                panel.FolderScroll,
+                false,
+                rows * 35f > folderViewportHeight,
+                GUIStyle.none,
+                GUI.skin.verticalScrollbar,
+                GUIStyle.none,
+                GUILayout.Height(folderViewportHeight));
             for (int first = 0; first < panel.Folders.Count; first += columns)
             {
                 GUILayout.BeginHorizontal();
@@ -9238,6 +9542,7 @@ namespace StudioCharaEditor
                     GUILayout.Space(gap);
                 }
             }
+            GUILayout.EndScrollView();
             GUILayout.EndVertical();
         }
 
@@ -9494,7 +9799,9 @@ namespace StudioCharaEditor
                 return;
             }
             detail.DetailDefine.Set(character, newId);
-            ClearSelectorCache();
+            RefreshSelectorCachesAfterSelection(
+                character,
+                detail.DetailDefine.Key);
             if (detail.DetailDefine.Upd != null && !LaterUpdate)
             {
                 detail.DetailDefine.Upd(character);
