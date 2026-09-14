@@ -1,4 +1,4 @@
-using AIChara;
+﻿using AIChara;
 using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using CharaCustom;
@@ -783,10 +783,7 @@ namespace StudioCharaEditor
             const float menuWidth = 280f;
             float logicalHeight = Screen.height / GetActiveGuiScale();
             float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item
-                ? Mathf.Clamp(
-                    310f + Math.Min(8, GetCustomFolders(selectorContextMenu.Scope).Count) * 30f,
-                    360f,
-                    Math.Max(360f, logicalHeight - 16f))
+                ? GetSelectorItemContextMenuHeight(logicalHeight - 16f)
                 : 240f;
             menuHeight = Math.Min(menuHeight, Math.Max(220f, logicalHeight - 16f));
             if (selectorContextMenu.Rect.width != menuWidth ||
@@ -9710,7 +9707,8 @@ namespace StudioCharaEditor
             {
                 DrawMainGameSelectorOutline(
                     cellRect,
-                    new Color(0.82f, 0.84f, 0.18f, 0.92f));
+                    Color.green,
+                    SelectorGridSelectionOutlineThickness);
             }
             else if (hover)
             {

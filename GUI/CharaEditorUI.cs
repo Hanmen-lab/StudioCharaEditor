@@ -132,6 +132,10 @@ namespace StudioCharaEditor
         private const float SelectorGridGap = 4f;
         private const float SelectorGridCellPadding = 2f;
         private const float SelectorGridLabelHeight = 18f;
+        private const float SelectorGridSelectionOutlineThickness = 3f;
+        private const int SelectorKeepScrollFrames = 4;
+        private const float SelectorContextMenuMinHeight = 180f;
+        private const int SelectorContextMenuFolderRows = 10;
         private const float ThinSliderHeight = 20f;
         private const float ThinSliderTrackHeight = 2f;
         private const float ThinSliderThumbSize = 10f;
@@ -285,6 +289,8 @@ namespace StudioCharaEditor
             public int FolderCustomVersion = -1;
             public bool ThumbList;
             public bool PendingScrollToSelected;
+            public float KeepScrollY;
+            public int KeepScrollFrames;
             public SelectorViewMode ViewMode = SelectorViewMode.List;
         }
 
@@ -456,6 +462,7 @@ namespace StudioCharaEditor
         }
 
         private SelectorSidePanel selectorSidePanel;
+        private Rect selectorGridAreaRect;
         private SelectorContextMenu selectorContextMenu;
 
         // Localize
@@ -1546,6 +1553,18 @@ namespace StudioCharaEditor
                     ? new Vector2(0f, Math.Max(0, selectedScrollIndex) * rowHeight + ThumbListRowGap)
                     : Vector2.zero;
                 panel.PendingScrollToSelected = false;
+                panel.KeepScrollFrames = 0;
+            }
+            else if (panel.KeepScrollFrames > 0)
+            {
+                // Picking an item rebuilds the rows and can briefly shrink the
+                // content, which makes the scroll view clamp itself back to the
+                // top. Hold the previous offset until the list settles.
+                panel.Scroll = new Vector2(panel.Scroll.x, panel.KeepScrollY);
+                if (Event.current.type == EventType.Layout)
+                {
+                    panel.KeepScrollFrames--;
+                }
             }
 
             GUILayout.BeginHorizontal();
@@ -1679,6 +1698,10 @@ namespace StudioCharaEditor
                 }
             }
             GUILayout.EndScrollView();
+            if (Event.current.type != EventType.Layout)
+            {
+                selectorGridAreaRect = GUILayoutUtility.GetLastRect();
+            }
             TrackSelectorScroll(oldScroll, panel.Scroll);
             GUILayout.EndVertical();
             DrawSelectorFolderPanel(panel, infoList);
@@ -1967,6 +1990,23 @@ namespace StudioCharaEditor
             GUI.DrawTexture(favoriteRect, Texture2D.whiteTexture);
             GUI.color = Color.white;
             GUI.skin.button.Draw(favoriteRect, new GUIContent(favorite ? "F" : "+", LC("Add to folder")), favoriteRect.Contains(evt.mousePosition), false, favorite, false);
+            GUI.color = oldColor;
+
+            if (selected)
+            {
+                DrawSelectorOutline(cellRect, Color.green, SelectorGridSelectionOutlineThickness);
+            }
+        }
+
+        private static void DrawSelectorOutline(Rect rect, Color color, float thickness)
+        {
+            thickness = Mathf.Max(1f, thickness);
+            Color oldColor = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(new Rect(rect.x, rect.y, rect.width, thickness), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x, rect.yMax - thickness, rect.width, thickness), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x, rect.y, thickness, rect.height), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.xMax - thickness, rect.y, thickness, rect.height), Texture2D.whiteTexture);
             GUI.color = oldColor;
         }
 
@@ -2502,16 +2542,29 @@ namespace StudioCharaEditor
             }
 
             const float menuWidth = 240f;
-            float menuHeight = selectorContextMenu.Type == SelectorContextMenuType.Item
-                ? Mathf.Clamp(
-                    270f + Math.Min(8, GetCustomFolders(selectorContextMenu.Scope).Count) * 28f,
-                    320f,
-                    Math.Max(320f, containerHeight - 32f))
-                : 230f;
-            menuHeight = Math.Min(menuHeight, Math.Max(180f, containerHeight - 32f));
-            Vector2 menuPosition = GUIUtility.ScreenToGUIPoint(selectorContextMenu.Position);
-            float x = Mathf.Clamp(menuPosition.x, 4f, Math.Max(4f, containerWidth - menuWidth - 4f));
-            float y = Mathf.Clamp(menuPosition.y, 24f, Math.Max(24f, containerHeight - menuHeight - 4f));
+            float menuHeight;
+            float x;
+            float y;
+            if (selectorContextMenu.Type == SelectorContextMenuType.Item)
+            {
+                // Pin the item menu to the top-right corner of the item grid,
+                // right next to the folder column, instead of following the
+                // mouse: it used to jump around depending on which cell was
+                // clicked. The height is fixed (room for
+                // SelectorContextMenuFolderRows folders) rather than sized to
+                // the folder count, so it does not change shape per item.
+                Rect area = GetSelectorGridAreaRect(containerWidth, containerHeight);
+                menuHeight = GetSelectorItemContextMenuHeight(area.height - 8f);
+                x = Mathf.Clamp(area.xMax - menuWidth - 4f, 4f, Math.Max(4f, containerWidth - menuWidth - 4f));
+                y = Mathf.Clamp(area.y + 4f, 24f, Math.Max(24f, containerHeight - menuHeight - 4f));
+            }
+            else
+            {
+                menuHeight = Math.Min(230f, Math.Max(SelectorContextMenuMinHeight, containerHeight - 32f));
+                Vector2 menuPosition = GUIUtility.ScreenToGUIPoint(selectorContextMenu.Position);
+                x = Mathf.Clamp(menuPosition.x, 4f, Math.Max(4f, containerWidth - menuWidth - 4f));
+                y = Mathf.Clamp(menuPosition.y, 24f, Math.Max(24f, containerHeight - menuHeight - 4f));
+            }
             selectorContextMenu.Rect = new Rect(x, y, menuWidth, menuHeight);
 
             GUILayout.BeginArea(selectorContextMenu.Rect, GetSelectorContextMenuStyle());
@@ -2524,6 +2577,62 @@ namespace StudioCharaEditor
                 DrawSelectorFolderContextMenu(panel, selectorContextMenu);
             }
             GUILayout.EndArea();
+        }
+
+        private Rect GetSelectorGridAreaRect(float containerWidth, float containerHeight)
+        {
+            if (selectorGridAreaRect.width > 1f && selectorGridAreaRect.height > 1f)
+            {
+                return selectorGridAreaRect;
+            }
+
+            // The grid has not been laid out yet; fall back to the whole window
+            // minus the folder column.
+            float width = Math.Max(120f, containerWidth - SelectorFolderWidth - 20f);
+            return new Rect(4f, 24f, width, Math.Max(200f, containerHeight - 28f));
+        }
+
+        private static float GetSelectorStyleRowHeight(GUIStyle style, float minimum)
+        {
+            if (style == null)
+            {
+                return minimum;
+            }
+
+            float height = style.fixedHeight > 0f
+                ? style.fixedHeight
+                : style.CalcHeight(new GUIContent("Ag"), 200f);
+            return Math.Max(minimum, height) +
+                   Math.Max(2f, Math.Max(style.margin.top, style.margin.bottom));
+        }
+
+        private float GetSelectorContextMenuFolderRowHeight()
+        {
+            return GetSelectorStyleRowHeight(GUI.skin.button, 18f);
+        }
+
+        // Everything in the item context menu except the folder list: the "#id"
+        // box, the favourite button, the "Folders" box, the name + Create row
+        // (fixed 28f) and the Close button, plus the window padding.
+        private float GetSelectorContextMenuChromeHeight()
+        {
+            return GetSelectorStyleRowHeight(GUI.skin.box, 18f) * 2f +
+                   GetSelectorContextMenuFolderRowHeight() * 2f +
+                   32f +
+                   GetSelectorContextMenuStyle().padding.vertical;
+        }
+
+        private float GetSelectorItemContextMenuHeight(float available)
+        {
+            float wanted = GetSelectorContextMenuChromeHeight() +
+                           GetSelectorContextMenuFolderRowHeight() * SelectorContextMenuFolderRows;
+            return Math.Min(wanted, Math.Max(SelectorContextMenuMinHeight, available));
+        }
+
+        private float GetSelectorContextMenuScrollHeight(float menuHeight)
+        {
+            float rowHeight = GetSelectorContextMenuFolderRowHeight();
+            return Math.Max(rowHeight * 2f, menuHeight - GetSelectorContextMenuChromeHeight());
         }
 
         private GUIStyle GetSelectorContextMenuStyle()
@@ -2600,7 +2709,7 @@ namespace StudioCharaEditor
                 GUIStyle.none,
                 GUI.skin.verticalScrollbar,
                 GUIStyle.none,
-                GUILayout.MinHeight(54f),
+                GUILayout.MinHeight(GetSelectorContextMenuScrollHeight(menu.Rect.height)),
                 GUILayout.ExpandHeight(true));
             for (int i = 0; i < folders.Count; i++)
             {
@@ -3833,13 +3942,15 @@ namespace StudioCharaEditor
             }
 
             panel.DetailInfo.DetailDefine.Set(panel.ChaCtrl, id);
-            ClearSelectorCache();
+            RefreshSelectorCachesAfterSelection(panel.ChaCtrl, panel.SelectorKey);
             if (panel.DetailInfo.DetailDefine.Upd != null && !LaterUpdate)
             {
                 panel.DetailInfo.DetailDefine.Upd(panel.ChaCtrl);
             }
 
             panel.PendingScrollToSelected = false;
+            panel.KeepScrollY = panel.Scroll.y;
+            panel.KeepScrollFrames = SelectorKeepScrollFrames;
         }
 
         private void OpenSelectorSidePanel(ChaControl chaCtrl, string name, CharaDetailInfo dInfo, int selectedIndex, bool thumbList, float rowHeight)
